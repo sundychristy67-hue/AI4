@@ -135,8 +135,7 @@ async def create_client_access_token(client_id: str) -> str:
     """Create a JWT access token for client password auth."""
     data = {
         'sub': client_id,
-        'type': 'client_auth',
-        'iat': datetime.now(timezone.utc).isoformat()
+        'type': 'client_auth'
     }
     return create_access_token(data, expires_delta=timedelta(days=7))
 
