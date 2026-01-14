@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     # Withdrawal
     min_withdrawal_amount: float = float(os.environ.get('MIN_WITHDRAWAL_AMOUNT', '20.0'))
     
+    # AI / LLM Integration
+    emergent_llm_key: str = os.environ.get('EMERGENT_LLM_KEY', '')
+    
     class Config:
         env_file = '.env'
 
