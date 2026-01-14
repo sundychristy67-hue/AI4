@@ -57,15 +57,15 @@ const PortalWallets = () => {
         </div>
 
         <div className="px-4 py-4 space-y-4">
-          {/* Real Wallet Card */}
+          {/* Cash Wallet Card */}
           <div className="bg-gradient-to-br from-emerald-600 to-teal-700 rounded-2xl p-5">
             <div className="flex items-center gap-3 mb-4">
               <div className="p-3 bg-white/20 rounded-xl">
                 <Wallet className="w-6 h-6 text-white" />
               </div>
               <div>
-                <h3 className="text-white/80 text-sm font-medium">Real Wallet</h3>
-                <p className="text-xs text-white/60">Withdrawable balance</p>
+                <h3 className="text-white/80 text-sm font-medium">Cash Balance</h3>
+                <p className="text-xs text-white/60">Withdrawable funds</p>
               </div>
             </div>
             <p className="text-4xl font-bold text-white mb-4">
@@ -75,29 +75,29 @@ const PortalWallets = () => {
               <div className="bg-white/10 rounded-lg p-3">
                 <div className="flex items-center gap-1 text-emerald-300 text-xs mb-1">
                   <ArrowDownRight className="w-3 h-3" />
-                  Total In
+                  Total Deposited
                 </div>
                 <p className="text-white font-semibold">${(wallet?.total_in || 0).toFixed(2)}</p>
               </div>
               <div className="bg-white/10 rounded-lg p-3">
                 <div className="flex items-center gap-1 text-red-300 text-xs mb-1">
                   <ArrowUpRight className="w-3 h-3" />
-                  Total Out
+                  Total Withdrawn
                 </div>
                 <p className="text-white font-semibold">${(wallet?.total_out || 0).toFixed(2)}</p>
               </div>
             </div>
           </div>
 
-          {/* Bonus Wallet Card */}
+          {/* Play Credits Card */}
           <div className="bg-gradient-to-br from-purple-600 to-pink-600 rounded-2xl p-5">
             <div className="flex items-center gap-3 mb-4">
               <div className="p-3 bg-white/20 rounded-xl">
                 <Gift className="w-6 h-6 text-white" />
               </div>
               <div>
-                <h3 className="text-white/80 text-sm font-medium">Bonus Wallet</h3>
-                <p className="text-xs text-white/60">Non-withdrawable • Game loads only</p>
+                <h3 className="text-white/80 text-sm font-medium">Play Credits</h3>
+                <p className="text-xs text-white/60">Non-withdrawable • Use in games</p>
               </div>
             </div>
             <p className="text-4xl font-bold text-white mb-4">
@@ -114,7 +114,7 @@ const PortalWallets = () => {
               <div className="bg-white/10 rounded-lg p-3">
                 <div className="flex items-center gap-1 text-pink-300 text-xs mb-1">
                   <CreditCard className="w-3 h-3" />
-                  Total Loaded
+                  Total Used
                 </div>
                 <p className="text-white font-semibold">${(wallet?.total_bonus_loaded || 0).toFixed(2)}</p>
               </div>
