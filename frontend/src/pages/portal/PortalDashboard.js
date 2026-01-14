@@ -6,7 +6,8 @@ import BottomNav from '../../components/BottomNav';
 import InviteModal from '../../components/InviteModal';
 import { 
   TrendingUp, TrendingDown, Users, ArrowRight, Gift, Key, Receipt, 
-  Wallet, CreditCard, Target, Settings, Star, Zap, Crown, Copy, Check
+  Wallet, CreditCard, Target, Settings, Star, Zap, Crown, Copy, Check,
+  Sparkles, MessageCircle, ChevronRight
 } from 'lucide-react';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
@@ -71,6 +72,7 @@ const PortalDashboard = () => {
 
   const realBalance = wallet.real_balance || 0;
   const bonusBalance = wallet.bonus_balance || 0;
+  const totalBalance = realBalance + bonusBalance;
   const referralEarnings = overview.referral_earnings || 0;
   const referralCode = referralSummary.referral_code || portalClient?.referral_code || 'N/A';
 
@@ -93,57 +95,80 @@ const PortalDashboard = () => {
             </button>
           </div>
 
-          {/* Dual Wallet Cards */}
-          <div className="space-y-3">
-            {/* Real Wallet */}
-            <div 
-              onClick={() => navigate('/portal/wallets')}
-              className="bg-gradient-to-r from-emerald-500 to-teal-600 rounded-2xl p-4 cursor-pointer hover:from-emerald-600 hover:to-teal-700 transition-all"
-            >
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="p-2 bg-white/20 rounded-lg">
-                    <Wallet className="w-5 h-5 text-white" />
-                  </div>
-                  <div>
-                    <p className="text-white/80 text-xs font-medium">Real Wallet</p>
-                    <p className="text-2xl font-bold text-white">${realBalance.toFixed(2)}</p>
-                  </div>
+          {/* SINGLE COMBINED WALLET - Click to see details */}
+          <div 
+            onClick={() => navigate('/portal/wallets')}
+            className="bg-gradient-to-r from-emerald-500 via-teal-500 to-emerald-600 rounded-2xl p-5 cursor-pointer hover:from-emerald-600 hover:via-teal-600 hover:to-emerald-700 transition-all shadow-lg shadow-emerald-500/20"
+          >
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-4">
+                <div className="p-3 bg-white/20 rounded-xl">
+                  <Wallet className="w-7 h-7 text-white" />
                 </div>
-                <ArrowRight className="w-5 h-5 text-white/60" />
+                <div>
+                  <p className="text-white/80 text-sm font-medium">Total Balance</p>
+                  <p className="text-4xl font-black text-white">${totalBalance.toFixed(2)}</p>
+                  <p className="text-white/60 text-xs mt-1">
+                    Real: ${realBalance.toFixed(2)} + Bonus: ${bonusBalance.toFixed(2)}
+                  </p>
+                </div>
               </div>
-            </div>
-
-            {/* Bonus Wallet - Enhanced with Freeplay $5 highlight */}
-            <div 
-              onClick={() => navigate('/portal/bonus-tasks')}
-              className="bg-gradient-to-r from-purple-500 to-pink-600 rounded-2xl p-4 cursor-pointer hover:from-purple-600 hover:to-pink-700 transition-all relative overflow-hidden"
-            >
-              <div className="absolute top-0 right-0 bg-yellow-400 text-black text-xs font-bold px-3 py-1 rounded-bl-lg">
-                🎁 FREEPLAY $5
-              </div>
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="p-2 bg-white/20 rounded-lg">
-                    <Gift className="w-5 h-5 text-white" />
-                  </div>
-                  <div>
-                    <p className="text-white/80 text-xs font-medium">Bonus Wallet</p>
-                    <p className="text-2xl font-bold text-white">${bonusBalance.toFixed(2)}</p>
-                  </div>
-                </div>
-                <div className="text-right">
-                  <p className="text-white/80 text-xs">Get 5 Referrals</p>
-                  <p className="text-yellow-300 text-sm font-bold">= $5 Bonus!</p>
-                </div>
+              <div className="flex flex-col items-end">
+                <ChevronRight className="w-6 h-6 text-white/60" />
+                <span className="text-white/60 text-xs mt-1">View Details</span>
               </div>
             </div>
           </div>
         </div>
 
-        {/* Balance Cards */}
+        {/* Main Content */}
         <div className="px-4 py-4 space-y-4">
-          {/* 🔥 EARN UP TO 30% - Main Highlight Card */}
+          
+          {/* 🔥 $5 FREEPLAY HIGHLIGHT - 100% REDEEMABLE */}
+          <div
+            onClick={() => navigate('/portal/bonus-tasks')}
+            className="bg-gradient-to-br from-purple-600 via-pink-500 to-orange-500 rounded-2xl p-5 cursor-pointer relative overflow-hidden shadow-lg shadow-purple-500/30"
+          >
+            {/* Animated sparkles background */}
+            <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-bl-full"></div>
+            <div className="absolute bottom-0 left-0 w-24 h-24 bg-white/5 rounded-tr-full"></div>
+            
+            <div className="relative">
+              <div className="flex items-center gap-2 mb-2">
+                <Sparkles className="w-6 h-6 text-yellow-300 animate-pulse" />
+                <span className="text-yellow-300 font-black text-lg">FREE $5 PLAY!</span>
+              </div>
+              
+              <h3 className="text-3xl font-black text-white mb-2">
+                GET 5 REFERRALS
+              </h3>
+              
+              <div className="flex items-center gap-3 mb-3">
+                <span className="px-3 py-1 bg-white/20 backdrop-blur rounded-full text-white font-bold text-sm">
+                  🎮 100% REDEEMABLE
+                </span>
+                <span className="px-3 py-1 bg-yellow-400/20 backdrop-blur rounded-full text-yellow-300 font-bold text-sm">
+                  USE IN ANY GAME
+                </span>
+              </div>
+              
+              <p className="text-white/80 text-sm mb-3">
+                Your friends just need to <span className="text-yellow-300 font-bold">text your code in Messenger</span> - that's it!
+              </p>
+              
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <MessageCircle className="w-4 h-4 text-white/60" />
+                  <span className="text-white/60 text-xs">Progress: {referralSummary.valid_referrals || 0}/5 referrals</span>
+                </div>
+                <span className="text-white font-bold flex items-center gap-1">
+                  Claim Now <ArrowRight className="w-4 h-4" />
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* 🔥 EARN UP TO 30% - LIFETIME */}
           <div
             onClick={() => navigate('/portal/referrals')}
             className="bg-gradient-to-br from-amber-500/20 via-orange-500/20 to-red-500/20 border-2 border-amber-500/50 rounded-2xl p-5 cursor-pointer hover:border-amber-400 transition-all relative overflow-hidden"
@@ -173,7 +198,7 @@ const PortalDashboard = () => {
             </div>
           </div>
 
-          {/* Referral Code Card - FIXED to show code properly */}
+          {/* Referral Code Card */}
           <div
             className="bg-gray-900 border border-emerald-500/30 rounded-xl p-4"
             data-testid="referral-code-card"
@@ -218,6 +243,14 @@ const PortalDashboard = () => {
                 View Referrals
               </button>
             </div>
+            
+            {/* How to share explanation */}
+            <div className="mt-3 p-3 bg-blue-500/10 border border-blue-500/20 rounded-lg">
+              <p className="text-blue-300 text-xs flex items-start gap-2">
+                <MessageCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                <span>Tell your friends to <span className="font-bold">message your code in our Messenger</span> when they sign up!</span>
+              </p>
+            </div>
           </div>
 
           {/* Stats Row */}
@@ -258,7 +291,7 @@ const PortalDashboard = () => {
               <span className="text-xs text-gray-500">Tier {referralSummary.tier || 0}</span>
             </div>
             <div className="flex items-center justify-between mb-2">
-              <span className="text-gray-400 text-sm">{referralSummary.valid_referrals || 0} valid referrals</span>
+              <span className="text-gray-400 text-sm">{referralSummary.valid_referrals || 0} active referrals</span>
               <span className="text-emerald-400 text-sm font-medium">{referralSummary.percentage || 5}% earn rate</span>
             </div>
             <div className="h-2 bg-gray-800 rounded-full overflow-hidden mb-3">
