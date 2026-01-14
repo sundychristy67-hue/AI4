@@ -220,7 +220,7 @@ const AdminAITestSpot = () => {
               {testInfo?.sample_prompts?.[selectedScenario]?.map((prompt, idx) => (
                 <button
                   key={idx}
-                  onClick={() => useSamplePrompt(prompt)}
+                  onClick={() => handleSamplePrompt(prompt)}
                   className="w-full text-left px-3 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm rounded-lg transition flex items-center gap-2"
                 >
                   <ChevronRight className="w-3 h-3 text-purple-400 flex-shrink-0" />
