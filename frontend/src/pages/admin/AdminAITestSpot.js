@@ -178,9 +178,9 @@ const AdminAITestSpot = () => {
                     }`}
                   >
                     {msg.role === 'assistant' && (
-                      <div className="flex items-center gap-2 mb-1 text-xs text-purple-400">
+                      <div className="flex items-center gap-2 mb-1 text-xs text-emerald-400">
                         <Sparkles className="w-3 h-3" />
-                        TEST RESPONSE
+                        GPT-4o RESPONSE
                       </div>
                     )}
                     <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
