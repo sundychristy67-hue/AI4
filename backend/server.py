@@ -12,6 +12,7 @@ from routes.admin_routes import router as admin_router
 from routes.telegram_routes import router as telegram_router
 from routes.settings_routes import router as settings_router
 from routes.public_routes import router as public_router
+from routes.test_routes import router as test_router
 
 # Configure logging
 logging.basicConfig(
