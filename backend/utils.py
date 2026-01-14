@@ -76,10 +76,11 @@ def get_default_settings() -> Dict[str, Any]:
             "base_percentage": 5.0,
             "tiers": [
                 {"tier_number": 0, "name": "Starter", "min_referrals": 0, "commission_percentage": 5.0},
-                {"tier_number": 1, "name": "Bronze", "min_referrals": 5, "commission_percentage": 6.0},
-                {"tier_number": 2, "name": "Silver", "min_referrals": 10, "commission_percentage": 7.0},
-                {"tier_number": 3, "name": "Gold", "min_referrals": 20, "commission_percentage": 8.0},
-                {"tier_number": 4, "name": "Platinum", "min_referrals": 50, "commission_percentage": 10.0},
+                {"tier_number": 1, "name": "Bronze", "min_referrals": 10, "commission_percentage": 10.0},
+                {"tier_number": 2, "name": "Silver", "min_referrals": 25, "commission_percentage": 15.0},
+                {"tier_number": 3, "name": "Gold", "min_referrals": 50, "commission_percentage": 20.0},
+                {"tier_number": 4, "name": "Platinum", "min_referrals": 100, "commission_percentage": 25.0},
+                {"tier_number": 5, "name": "Diamond", "min_referrals": 200, "commission_percentage": 30.0},
             ]
         },
         "bonus_rules": {
@@ -107,6 +108,36 @@ def get_default_settings() -> Dict[str, Any]:
             "rapid_signup_threshold_minutes": 5,
             "auto_flag_suspicious": True,
             "auto_reject_fraud": False
+        },
+        # NEW: Active Referral Criteria
+        "active_referral_criteria": {
+            "min_deposits_required": 1,
+            "min_total_deposit_amount": 10.0,
+            "activity_window_days": 30,
+            "require_recent_activity": True
+        },
+        # NEW: First-Time Client Greeting Messages
+        "first_time_greeting": {
+            "enabled": True,
+            "messages": [
+                {
+                    "order": 1,
+                    "message": "👋 Welcome to our Gaming Platform!",
+                    "delay_seconds": 0
+                },
+                {
+                    "order": 2,
+                    "message": "🎮 I'm here to help you get started. Do you have a referral code from a friend?",
+                    "delay_seconds": 2
+                },
+                {
+                    "order": 3,
+                    "message": "If yes, please type your referral code now. If not, just type 'NO' or 'SKIP' to continue.",
+                    "delay_seconds": 1
+                }
+            ],
+            "ask_referral_code": True,
+            "referral_code_prompt": "Please enter the referral code, or type 'SKIP' if you don't have one:"
         }
     }
 
