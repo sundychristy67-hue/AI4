@@ -423,7 +423,7 @@ const PortalReferrals = () => {
                 <h4 className="text-blue-400 font-bold mb-2">What is an Active Referral?</h4>
                 <p className="text-gray-300 text-sm">
                   A referral becomes <span className="text-emerald-400 font-bold">ACTIVE</span> when they make their <span className="font-bold">first deposit</span>. 
-                  Only active referrals count towards your tier progression and you only earn commission from active referrals' deposits.
+                  Only active referrals count towards your tier progression and you only earn commission from active referrals&apos; deposits.
                 </p>
               </div>
             </div>
