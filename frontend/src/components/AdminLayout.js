@@ -13,6 +13,8 @@ const AdminLayout = () => {
     { path: '/admin/clients', icon: Users, label: 'Clients' },
     { path: '/admin/orders', icon: ShoppingCart, label: 'Orders' },
     { path: '/admin/games', icon: Gamepad2, label: 'Games' },
+    { path: '/admin/payment-panel', icon: CreditCard, label: 'Payment Panel' },
+    { path: '/admin/ai-test', icon: Bot, label: 'AI Test Spot' },
     { path: '/admin/audit-logs', icon: FileText, label: 'Audit Logs' },
     { path: '/admin/settings', icon: Settings, label: 'Settings' },
   ];
