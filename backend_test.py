@@ -3,13 +3,13 @@ import sys
 from datetime import datetime
 import json
 
-class BonusWalletTester:
-    def __init__(self, base_url="https://vaultlink.preview.emergentagent.com"):
+class Phase6Tester:
+    def __init__(self, base_url="https://master-deploy.preview.emergentagent.com"):
         self.base_url = base_url
         self.api = f"{base_url}/api"
         self.admin_token = None
-        self.portal_token = "8efe2582-3866-4874-a5f2-3b9999130633"
-        self.client_id = "55532916-671e-4c0c-940b-50d848352870"
+        self.test_client_id = None
+        self.test_order_id = None
         self.tests_run = 0
         self.tests_passed = 0
 
