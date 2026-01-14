@@ -98,8 +98,17 @@ const PortalDashboard = () => {
           {/* SINGLE COMBINED WALLET - Click to see details */}
           <div 
             onClick={() => navigate('/portal/wallets')}
-            className="bg-gradient-to-r from-emerald-500 via-teal-500 to-emerald-600 rounded-2xl p-5 cursor-pointer hover:from-emerald-600 hover:via-teal-600 hover:to-emerald-700 transition-all shadow-lg shadow-emerald-500/20"
+            className="bg-gradient-to-r from-emerald-500 via-teal-500 to-emerald-600 rounded-2xl p-5 cursor-pointer hover:from-emerald-600 hover:via-teal-600 hover:to-emerald-700 transition-all shadow-lg shadow-emerald-500/20 relative overflow-hidden"
           >
+            {/* 🎁 $5 Freeplay Tag - Small */}
+            <div 
+              onClick={(e) => { e.stopPropagation(); navigate('/portal/bonus-tasks'); }}
+              className="absolute top-3 right-3 px-3 py-1.5 bg-gradient-to-r from-purple-500 to-pink-500 rounded-full cursor-pointer hover:from-purple-600 hover:to-pink-600 transition-all shadow-lg flex items-center gap-1.5"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-yellow-300" />
+              <span className="text-white font-bold text-xs">$5 Freeplay</span>
+            </div>
+            
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-4">
                 <div className="p-3 bg-white/20 rounded-xl">
@@ -109,7 +118,7 @@ const PortalDashboard = () => {
                   <p className="text-white/80 text-sm font-medium">Total Balance</p>
                   <p className="text-4xl font-black text-white">${totalBalance.toFixed(2)}</p>
                   <p className="text-white/60 text-xs mt-1">
-                    Real: ${realBalance.toFixed(2)} + Bonus: ${bonusBalance.toFixed(2)}
+                    Cash: ${realBalance.toFixed(2)} + Play Credits: ${bonusBalance.toFixed(2)}
                   </p>
                 </div>
               </div>
@@ -124,50 +133,6 @@ const PortalDashboard = () => {
         {/* Main Content */}
         <div className="px-4 py-4 space-y-4">
           
-          {/* 🔥 $5 FREEPLAY HIGHLIGHT - 100% REDEEMABLE */}
-          <div
-            onClick={() => navigate('/portal/bonus-tasks')}
-            className="bg-gradient-to-br from-purple-600 via-pink-500 to-orange-500 rounded-2xl p-5 cursor-pointer relative overflow-hidden shadow-lg shadow-purple-500/30"
-          >
-            {/* Animated sparkles background */}
-            <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-bl-full"></div>
-            <div className="absolute bottom-0 left-0 w-24 h-24 bg-white/5 rounded-tr-full"></div>
-            
-            <div className="relative">
-              <div className="flex items-center gap-2 mb-2">
-                <Sparkles className="w-6 h-6 text-yellow-300 animate-pulse" />
-                <span className="text-yellow-300 font-black text-lg">FREE $5 PLAY!</span>
-              </div>
-              
-              <h3 className="text-3xl font-black text-white mb-2">
-                GET 5 REFERRALS
-              </h3>
-              
-              <div className="flex items-center gap-3 mb-3">
-                <span className="px-3 py-1 bg-white/20 backdrop-blur rounded-full text-white font-bold text-sm">
-                  🎮 100% REDEEMABLE
-                </span>
-                <span className="px-3 py-1 bg-yellow-400/20 backdrop-blur rounded-full text-yellow-300 font-bold text-sm">
-                  USE IN ANY GAME
-                </span>
-              </div>
-              
-              <p className="text-white/80 text-sm mb-3">
-                Your friends just need to <span className="text-yellow-300 font-bold">text your code in Messenger</span> - that's it!
-              </p>
-              
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <MessageCircle className="w-4 h-4 text-white/60" />
-                  <span className="text-white/60 text-xs">Progress: {referralSummary.valid_referrals || 0}/5 referrals</span>
-                </div>
-                <span className="text-white font-bold flex items-center gap-1">
-                  Claim Now <ArrowRight className="w-4 h-4" />
-                </span>
-              </div>
-            </div>
-          </div>
-
           {/* 🔥 EARN UP TO 30% - LIFETIME */}
           <div
             onClick={() => navigate('/portal/referrals')}
