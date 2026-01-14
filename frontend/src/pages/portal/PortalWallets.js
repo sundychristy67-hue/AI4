@@ -126,7 +126,7 @@ const PortalWallets = () => {
             <h3 className="text-white font-semibold mb-3">Additional Stats</h3>
             <div className="space-y-3">
               <div className="flex items-center justify-between py-2 border-b border-gray-800">
-                <span className="text-gray-400">Real Wallet Loaded to Games</span>
+                <span className="text-gray-400">Cash Used for Games</span>
                 <span className="text-white font-medium">${(wallet?.total_real_loaded || 0).toFixed(2)}</span>
               </div>
               <div className="flex items-center justify-between py-2 border-b border-gray-800">
