@@ -118,9 +118,9 @@ function App() {
               <Route path="settings" element={<AdminSettings />} />
             </Route>
             
-            {/* Default redirect */}
-            <Route path="/" element={<Navigate to="/login" replace />} />
-            <Route path="*" element={<Navigate to="/login" replace />} />
+            {/* Default redirect to public games (no login required) */}
+            <Route path="/" element={<Navigate to="/games" replace />} />
+            <Route path="*" element={<Navigate to="/games" replace />} />
           </Routes>
         </div>
       </Router>
