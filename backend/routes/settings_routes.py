@@ -534,3 +534,239 @@ async def reset_to_defaults(
     await log_settings_change(db, current_user['id'], 'reset_defaults', {'section': section or 'all'})
     
     return {'message': f'Settings reset to defaults ({section or "all"})', 'settings': update_doc}
+
+
+
+# ==================== ACTIVE REFERRAL CRITERIA ====================
+
+@router.get('/active-referral-criteria')
+async def get_active_referral_criteria(current_user: dict = Depends(get_current_admin)):
+    """Get active referral criteria configuration."""
+    db = await get_database()
+    settings = await get_global_settings(db)
+    return settings.get('active_referral_criteria', {
+        "min_deposits_required": 1,
+        "min_total_deposit_amount": 10.0,
+        "activity_window_days": 30,
+        "require_recent_activity": True
+    })
+
+
+@router.put('/active-referral-criteria')
+async def update_active_referral_criteria(
+    criteria: dict,
+    current_user: dict = Depends(get_current_admin)
+):
+    """
+    Update active referral criteria.
+    
+    Criteria defines when a referral is considered "active":
+    - min_deposits_required: Minimum number of deposits
+    - min_total_deposit_amount: Minimum total deposited amount
+    - activity_window_days: Within how many days the activity must occur
+    - require_recent_activity: Whether recent activity is required
+    """
+    db = await get_database()
+    
+    allowed_fields = [
+        'min_deposits_required', 'min_total_deposit_amount', 
+        'activity_window_days', 'require_recent_activity'
+    ]
+    
+    # Validate and filter
+    valid_criteria = {}
+    for field in allowed_fields:
+        if field in criteria:
+            valid_criteria[field] = criteria[field]
+    
+    if not valid_criteria:
+        raise HTTPException(status_code=400, detail='No valid criteria fields provided')
+    
+    # Get current settings and merge
+    settings = await get_global_settings(db)
+    current_criteria = settings.get('active_referral_criteria', {})
+    current_criteria.update(valid_criteria)
+    
+    await db.global_settings.update_one(
+        {'_id': 'global'},
+        {
+            '$set': {
+                'active_referral_criteria': current_criteria,
+                'updated_at': get_current_utc_iso(),
+                'updated_by': current_user['id']
+            }
+        },
+        upsert=True
+    )
+    
+    invalidate_settings_cache()
+    await log_settings_change(db, current_user['id'], 'active_referral_criteria_update', valid_criteria)
+    
+    return {'message': 'Active referral criteria updated', 'criteria': current_criteria}
+
+
+# ==================== FIRST-TIME GREETING MESSAGES ====================
+
+@router.get('/first-time-greeting')
+async def get_first_time_greeting(current_user: dict = Depends(get_current_admin)):
+    """Get first-time client greeting messages configuration."""
+    db = await get_database()
+    settings = await get_global_settings(db)
+    return settings.get('first_time_greeting', {
+        "enabled": True,
+        "messages": [],
+        "ask_referral_code": True,
+        "referral_code_prompt": "Please enter the referral code, or type 'SKIP' if you don't have one:"
+    })
+
+
+@router.put('/first-time-greeting')
+async def update_first_time_greeting(
+    greeting_config: dict,
+    current_user: dict = Depends(get_current_admin)
+):
+    """
+    Update first-time greeting messages.
+    
+    Format:
+    {
+        "enabled": true,
+        "messages": [
+            {"order": 1, "message": "Welcome!", "delay_seconds": 0},
+            {"order": 2, "message": "Do you have a referral code?", "delay_seconds": 2}
+        ],
+        "ask_referral_code": true,
+        "referral_code_prompt": "Enter referral code or type SKIP:"
+    }
+    """
+    db = await get_database()
+    
+    # Validate messages if provided
+    if 'messages' in greeting_config:
+        messages = greeting_config['messages']
+        if not isinstance(messages, list):
+            raise HTTPException(status_code=400, detail='messages must be a list')
+        
+        # Sort by order
+        messages = sorted(messages, key=lambda x: x.get('order', 0))
+        
+        # Validate each message
+        for msg in messages:
+            if 'message' not in msg or not msg['message'].strip():
+                raise HTTPException(status_code=400, detail='Each message must have non-empty "message" field')
+            if 'order' not in msg:
+                msg['order'] = messages.index(msg) + 1
+            if 'delay_seconds' not in msg:
+                msg['delay_seconds'] = 1
+        
+        greeting_config['messages'] = messages
+    
+    # Get current settings and merge
+    settings = await get_global_settings(db)
+    current_greeting = settings.get('first_time_greeting', {})
+    current_greeting.update(greeting_config)
+    
+    await db.global_settings.update_one(
+        {'_id': 'global'},
+        {
+            '$set': {
+                'first_time_greeting': current_greeting,
+                'updated_at': get_current_utc_iso(),
+                'updated_by': current_user['id']
+            }
+        },
+        upsert=True
+    )
+    
+    invalidate_settings_cache()
+    await log_settings_change(db, current_user['id'], 'first_time_greeting_update', greeting_config)
+    
+    return {'message': 'First-time greeting updated', 'greeting': current_greeting}
+
+
+@router.post('/first-time-greeting/messages')
+async def add_greeting_message(
+    message: dict,
+    current_user: dict = Depends(get_current_admin)
+):
+    """Add a new greeting message."""
+    db = await get_database()
+    
+    if 'message' not in message or not message['message'].strip():
+        raise HTTPException(status_code=400, detail='message field is required')
+    
+    settings = await get_global_settings(db)
+    greeting = settings.get('first_time_greeting', {'messages': []})
+    messages = greeting.get('messages', [])
+    
+    # Auto-assign order
+    max_order = max([m.get('order', 0) for m in messages], default=0)
+    new_message = {
+        'order': message.get('order', max_order + 1),
+        'message': message['message'].strip(),
+        'delay_seconds': message.get('delay_seconds', 1)
+    }
+    
+    messages.append(new_message)
+    messages = sorted(messages, key=lambda x: x.get('order', 0))
+    
+    greeting['messages'] = messages
+    
+    await db.global_settings.update_one(
+        {'_id': 'global'},
+        {
+            '$set': {
+                'first_time_greeting': greeting,
+                'updated_at': get_current_utc_iso(),
+                'updated_by': current_user['id']
+            }
+        },
+        upsert=True
+    )
+    
+    invalidate_settings_cache()
+    await log_settings_change(db, current_user['id'], 'greeting_message_add', new_message)
+    
+    return {'message': 'Greeting message added', 'messages': messages}
+
+
+@router.delete('/first-time-greeting/messages/{order}')
+async def delete_greeting_message(
+    order: int,
+    current_user: dict = Depends(get_current_admin)
+):
+    """Delete a greeting message by order."""
+    db = await get_database()
+    
+    settings = await get_global_settings(db)
+    greeting = settings.get('first_time_greeting', {'messages': []})
+    messages = greeting.get('messages', [])
+    
+    new_messages = [m for m in messages if m.get('order') != order]
+    
+    if len(new_messages) == len(messages):
+        raise HTTPException(status_code=404, detail='Message not found')
+    
+    # Re-order
+    new_messages = sorted(new_messages, key=lambda x: x.get('order', 0))
+    for i, m in enumerate(new_messages):
+        m['order'] = i + 1
+    
+    greeting['messages'] = new_messages
+    
+    await db.global_settings.update_one(
+        {'_id': 'global'},
+        {
+            '$set': {
+                'first_time_greeting': greeting,
+                'updated_at': get_current_utc_iso(),
+                'updated_by': current_user['id']
+            }
+        },
+        upsert=True
+    )
+    
+    invalidate_settings_cache()
+    await log_settings_change(db, current_user['id'], 'greeting_message_delete', {'order': order})
+    
+    return {'message': 'Greeting message deleted', 'messages': new_messages}
