@@ -3,7 +3,7 @@ Test Routes - AI Test Spot & Payment Simulation Panel
 TEMPORARY IMPLEMENTATION FOR TESTING
 
 These routes provide:
-1. AI Test Spot - Isolated area for testing AI conversations
+1. AI Test Spot - Isolated area for testing AI conversations (NOW WITH REAL GPT!)
 2. Payment Simulation - Manual payment verification without Telegram/Chatwoot
 """
 
@@ -16,9 +16,38 @@ from auth import get_current_admin
 from database import get_database
 from utils import generate_id, get_current_utc_iso, calculate_wallet_balances, process_referral_on_deposit
 import logging
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix='/test', tags=['Test Mode'])
+
+# Initialize GPT Chat
+EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY')
+
+GAMING_SYSTEM_PROMPT = """You are a helpful AI assistant for a gaming platform. You help users with:
+
+1. **Account & Balance Questions**: Explain how to check balances (Real wallet + Bonus wallet)
+2. **Loading Credits**: Guide users to load credits to their favorite games
+3. **Withdrawals**: Explain withdrawal process and minimum requirements ($20 minimum)
+4. **Referral Program**: Explain how referrals work (5-10% commission based on tier)
+5. **Game Information**: Help users find games, download links, and availability
+6. **Technical Support**: Basic troubleshooting for common issues
+
+**Important Rules:**
+- Be friendly and helpful
+- Keep responses concise but informative
+- For sensitive actions (payments, withdrawals), remind users to use the official portal
+- Never share actual credentials or sensitive data
+- If unsure, recommend contacting support via Messenger
+
+**Platform Features:**
+- Games catalog with availability status (Available, Maintenance, Unavailable)
+- Real wallet (withdrawable) and Bonus wallet (non-withdrawable, for games only)
+- Referral program with tiered commissions
+- Secure portal access via magic link or password"""
 
 
 # ==================== MODELS ====================
