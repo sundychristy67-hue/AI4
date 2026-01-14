@@ -285,22 +285,24 @@ class Phase6Tester:
         return success
 
 def main():
-    print("🚀 Starting Bonus Wallet System Phase 1 Testing...")
+    print("🚀 Starting Phase 6 Testing - AI Test Spot & Payment Panel...")
     print("=" * 60)
     
-    tester = BonusWalletTester()
+    tester = Phase6Tester()
     
-    # Test sequence
+    # Test sequence for Phase 6 features
     tests = [
+        ("Public Games Access (No Auth)", tester.test_public_games_access),
+        ("Public Site Info", tester.test_public_site_info),
         ("Admin Authentication", tester.test_admin_login),
-        ("Portal Token Validation", tester.test_portal_validation),
-        ("Portal Wallets API", tester.test_portal_wallets),
-        ("Portal Games API", tester.test_portal_games),
-        ("Load to Game Validation", tester.test_load_to_game_validation),
-        ("Portal Bonus Tasks API", tester.test_bonus_tasks),
-        ("Admin Dashboard Stats", tester.test_admin_dashboard_stats),
-        ("Admin Client Detail", tester.test_admin_client_detail),
-        ("Admin Wallet Adjustment", tester.test_admin_wallet_adjustment),
+        ("AI Test Spot Info", tester.test_ai_test_info),
+        ("AI Test Simulation", tester.test_ai_test_simulate),
+        ("AI Test Logs", tester.test_ai_test_logs),
+        ("Create Test Client", tester.test_create_test_client),
+        ("Payment Simulation", tester.test_payment_simulate),
+        ("Pending Payments", tester.test_payment_pending),
+        ("Mark Payment Received", tester.test_payment_action_received),
+        ("Payment Panel Stats", tester.test_payment_stats),
     ]
     
     failed_tests = []
@@ -321,7 +323,7 @@ def main():
         print(f"❌ Failed Tests: {', '.join(failed_tests)}")
         return 1
     else:
-        print("✅ All tests passed!")
+        print("✅ All Phase 6 tests passed!")
         return 0
 
 if __name__ == "__main__":
