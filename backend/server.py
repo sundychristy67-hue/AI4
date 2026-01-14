@@ -10,6 +10,7 @@ from routes.client_routes import router as client_router
 from routes.portal_routes import router as portal_router
 from routes.admin_routes import router as admin_router
 from routes.telegram_routes import router as telegram_router
+from routes.telegram_admin_routes import router as telegram_admin_router
 from routes.settings_routes import router as settings_router
 from routes.public_routes import router as public_router
 from routes.test_routes import router as test_router
