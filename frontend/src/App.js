@@ -34,6 +34,8 @@ import AdminOrders from './pages/admin/AdminOrders';
 import AdminGames from './pages/admin/AdminGames';
 import AdminAuditLogs from './pages/admin/AdminAuditLogs';
 import AdminSettings from './pages/admin/AdminSettings';
+import AdminAITestSpot from './pages/admin/AdminAITestSpot';
+import AdminPaymentPanel from './pages/admin/AdminPaymentPanel';
 
 function App() {
   return (
