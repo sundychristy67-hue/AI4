@@ -1,7 +1,7 @@
 import React from 'react';
 import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { LayoutDashboard, Users, ShoppingCart, Gamepad2, FileText, LogOut, Settings, Bot, CreditCard } from 'lucide-react';
+import { LayoutDashboard, Users, ShoppingCart, Gamepad2, FileText, LogOut, Settings, Bot, CreditCard, Send } from 'lucide-react';
 
 const AdminLayout = () => {
   const { user, logout } = useAuth();
