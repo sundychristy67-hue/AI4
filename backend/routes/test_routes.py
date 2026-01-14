@@ -145,55 +145,89 @@ async def simulate_ai_conversation(
     current_user: dict = Depends(get_current_admin)
 ):
     """
-    Simulate AI conversation for testing purposes.
-    This is a mock response - no real AI is called.
+    Chat with real GPT AI for testing purposes.
+    Uses OpenAI GPT-4o via Emergent integrations.
     """
     db = await get_database()
     
-    # Log the test
-    test_log = {
-        "id": generate_id(),
-        "admin_id": current_user['id'],
-        "scenario": conversation.test_scenario,
-        "messages": [m.dict() for m in conversation.messages],
-        "timestamp": get_current_utc_iso(),
-        "mode": "TEST"
-    }
-    await db.ai_test_logs.insert_one(test_log)
+    if not EMERGENT_LLM_KEY:
+        raise HTTPException(status_code=500, detail="AI not configured - EMERGENT_LLM_KEY not found")
     
-    # Generate mock response based on last message
-    last_message = conversation.messages[-1].content if conversation.messages else ""
+    # Generate session ID for this conversation
+    session_id = f"ai_test_{current_user['id']}_{generate_id()[:8]}"
     
-    # Simple pattern matching for mock responses
-    mock_responses = {
-        "balance": "TEST MODE: Your simulated balance is $100.00 (Real + $25.00 Bonus)",
-        "load": "TEST MODE: To load credits, go to Portal > Load Game. Select game and amount.",
-        "withdraw": "TEST MODE: Withdrawal minimum is $20. Go to Portal > Withdrawals.",
-        "referral": "TEST MODE: Share your referral code to earn 5-10% commission on referrals.",
-        "help": "TEST MODE: Contact support via Messenger for assistance.",
-    }
-    
-    response_content = "TEST MODE: I understand your query. In production, this would trigger the actual AI response."
-    
-    for key, response in mock_responses.items():
-        if key.lower() in last_message.lower():
-            response_content = response
-            break
-    
-    return {
-        "test_mode": True,
-        "response": {
-            "role": "assistant",
-            "content": response_content
-        },
-        "test_id": test_log["id"],
-        "warning": "This is a TEST response - no real AI was invoked",
-        "suggested_actions": [
-            "Try different scenarios",
-            "Test error handling",
-            "Verify response format"
-        ]
-    }
+    try:
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        
+        # Initialize the chat with GPT-4o
+        chat = LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=session_id,
+            system_message=GAMING_SYSTEM_PROMPT
+        ).with_model("openai", "gpt-4o")
+        
+        # Get the last user message
+        last_message = conversation.messages[-1].content if conversation.messages else ""
+        
+        # Add context from scenario
+        scenario_context = ""
+        if conversation.test_scenario == "client_query":
+            scenario_context = "[Context: This is a client asking about the gaming platform] "
+        elif conversation.test_scenario == "agent_response":
+            scenario_context = "[Context: You are helping an agent respond to a user scenario] "
+        elif conversation.test_scenario == "payment_flow":
+            scenario_context = "[Context: User has payment-related questions] "
+        elif conversation.test_scenario == "error_handling":
+            scenario_context = "[Context: User is experiencing an issue] "
+        
+        # Send message to GPT
+        user_message = UserMessage(text=scenario_context + last_message)
+        response_text = await chat.send_message(user_message)
+        
+        # Log the test
+        test_log = {
+            "id": generate_id(),
+            "admin_id": current_user['id'],
+            "scenario": conversation.test_scenario,
+            "messages": [m.dict() for m in conversation.messages],
+            "ai_response": response_text,
+            "timestamp": get_current_utc_iso(),
+            "mode": "LIVE_GPT",
+            "model": "gpt-4o"
+        }
+        await db.ai_test_logs.insert_one(test_log)
+        
+        return {
+            "test_mode": False,
+            "ai_enabled": True,
+            "response": {
+                "role": "assistant",
+                "content": response_text
+            },
+            "test_id": test_log["id"],
+            "model": "GPT-4o (OpenAI)",
+            "info": "Real AI response from GPT-4o"
+        }
+        
+    except Exception as e:
+        logger.error(f"AI chat error: {str(e)}")
+        
+        # Log the error
+        error_log = {
+            "id": generate_id(),
+            "admin_id": current_user['id'],
+            "scenario": conversation.test_scenario,
+            "messages": [m.dict() for m in conversation.messages],
+            "error": str(e),
+            "timestamp": get_current_utc_iso(),
+            "mode": "ERROR"
+        }
+        await db.ai_test_logs.insert_one(error_log)
+        
+        raise HTTPException(
+            status_code=500, 
+            detail=f"AI error: {str(e)}"
+        )
 
 
 @router.get('/ai-test/logs')
