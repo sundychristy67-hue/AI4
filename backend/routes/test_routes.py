@@ -534,6 +534,9 @@ async def create_test_client(
     
     await db.clients.insert_one(client_doc)
     
+    # Remove _id before returning
+    client_doc.pop('_id', None)
+    
     return {
         "success": True,
         "client": client_doc,
