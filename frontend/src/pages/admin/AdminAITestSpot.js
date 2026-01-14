@@ -74,7 +74,7 @@ const AdminAITestSpot = () => {
     }
   };
 
-  const useSamplePrompt = (prompt) => {
+  const handleSamplePrompt = (prompt) => {
     setInputMessage(prompt);
   };
 
