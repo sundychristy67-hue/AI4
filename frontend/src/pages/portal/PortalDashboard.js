@@ -4,7 +4,10 @@ import axios from 'axios';
 import { useAuth } from '../../context/AuthContext';
 import BottomNav from '../../components/BottomNav';
 import InviteModal from '../../components/InviteModal';
-import { TrendingUp, TrendingDown, Users, ArrowRight, Gift, Key, Receipt, Wallet, CreditCard, Target, Settings } from 'lucide-react';
+import { 
+  TrendingUp, TrendingDown, Users, ArrowRight, Gift, Key, Receipt, 
+  Wallet, CreditCard, Target, Settings, Star, Zap, Crown, Copy, Check
+} from 'lucide-react';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -15,6 +18,7 @@ const PortalDashboard = () => {
   const [loading, setLoading] = useState(true);
   const [dashboard, setDashboard] = useState(null);
   const [showInviteModal, setShowInviteModal] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   const getAuthHeaders = () => {
     if (clientToken) {
@@ -42,6 +46,15 @@ const PortalDashboard = () => {
     }
   };
 
+  const handleCopyCode = () => {
+    const code = dashboard?.referral_summary?.referral_code || portalClient?.referral_code;
+    if (code) {
+      navigator.clipboard.writeText(code);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center">
@@ -59,6 +72,7 @@ const PortalDashboard = () => {
   const realBalance = wallet.real_balance || 0;
   const bonusBalance = wallet.bonus_balance || 0;
   const referralEarnings = overview.referral_earnings || 0;
+  const referralCode = referralSummary.referral_code || portalClient?.referral_code || 'N/A';
 
   return (
     <div className="min-h-screen bg-black pb-20">
@@ -100,11 +114,14 @@ const PortalDashboard = () => {
               </div>
             </div>
 
-            {/* Bonus Wallet */}
+            {/* Bonus Wallet - Enhanced with Freeplay $5 highlight */}
             <div 
               onClick={() => navigate('/portal/bonus-tasks')}
-              className="bg-gradient-to-r from-purple-500 to-pink-600 rounded-2xl p-4 cursor-pointer hover:from-purple-600 hover:to-pink-700 transition-all"
+              className="bg-gradient-to-r from-purple-500 to-pink-600 rounded-2xl p-4 cursor-pointer hover:from-purple-600 hover:to-pink-700 transition-all relative overflow-hidden"
             >
+              <div className="absolute top-0 right-0 bg-yellow-400 text-black text-xs font-bold px-3 py-1 rounded-bl-lg">
+                🎁 FREEPLAY $5
+              </div>
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
                   <div className="p-2 bg-white/20 rounded-lg">
@@ -115,7 +132,10 @@ const PortalDashboard = () => {
                     <p className="text-2xl font-bold text-white">${bonusBalance.toFixed(2)}</p>
                   </div>
                 </div>
-                <ArrowRight className="w-5 h-5 text-white/60" />
+                <div className="text-right">
+                  <p className="text-white/80 text-xs">Get 5 Referrals</p>
+                  <p className="text-yellow-300 text-sm font-bold">= $5 Bonus!</p>
+                </div>
               </div>
             </div>
           </div>
@@ -123,6 +143,83 @@ const PortalDashboard = () => {
 
         {/* Balance Cards */}
         <div className="px-4 py-4 space-y-4">
+          {/* 🔥 EARN UP TO 30% - Main Highlight Card */}
+          <div
+            onClick={() => navigate('/portal/referrals')}
+            className="bg-gradient-to-br from-amber-500/20 via-orange-500/20 to-red-500/20 border-2 border-amber-500/50 rounded-2xl p-5 cursor-pointer hover:border-amber-400 transition-all relative overflow-hidden"
+            data-testid="earn-30-card"
+          >
+            <div className="absolute top-0 right-0 w-32 h-32 bg-gradient-to-bl from-amber-400/20 to-transparent rounded-bl-full"></div>
+            <div className="flex items-start justify-between">
+              <div>
+                <div className="flex items-center gap-2 mb-2">
+                  <Crown className="w-6 h-6 text-amber-400" />
+                  <span className="text-amber-400 font-bold text-lg">LIFETIME EARNINGS</span>
+                </div>
+                <h3 className="text-3xl font-black text-white mb-1">
+                  EARN UP TO <span className="text-amber-400">30%</span>
+                </h3>
+                <p className="text-gray-400 text-sm">From all your referral deposits - FOREVER!</p>
+              </div>
+              <Zap className="w-8 h-8 text-amber-400 animate-pulse" />
+            </div>
+            <div className="mt-4 flex items-center justify-between">
+              <span className="text-emerald-400 text-sm font-medium">
+                Current Rate: {referralSummary.percentage || 5}% (Tier {referralSummary.tier || 0})
+              </span>
+              <span className="text-amber-400 text-sm font-bold flex items-center gap-1">
+                Start Earning <ArrowRight className="w-4 h-4" />
+              </span>
+            </div>
+          </div>
+
+          {/* Referral Code Card - FIXED to show code properly */}
+          <div
+            className="bg-gray-900 border border-emerald-500/30 rounded-xl p-4"
+            data-testid="referral-code-card"
+          >
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <Star className="w-5 h-5 text-emerald-400" />
+                <span className="text-white font-medium">Your Referral Code</span>
+              </div>
+              <span className="text-xs bg-emerald-500/20 text-emerald-400 px-2 py-1 rounded-full">
+                Share & Earn
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="flex-1 bg-black border border-gray-700 rounded-lg px-4 py-3 text-center">
+                <span className="text-2xl font-mono font-bold text-emerald-400 tracking-wider">
+                  {referralCode}
+                </span>
+              </div>
+              <button
+                onClick={handleCopyCode}
+                className="p-3 bg-emerald-500 hover:bg-emerald-600 rounded-lg transition-colors"
+              >
+                {copied ? (
+                  <Check className="w-5 h-5 text-white" />
+                ) : (
+                  <Copy className="w-5 h-5 text-white" />
+                )}
+              </button>
+            </div>
+            <div className="flex gap-2 mt-3">
+              <button
+                onClick={() => setShowInviteModal(true)}
+                className="flex-1 py-2 bg-gradient-to-r from-emerald-500 to-teal-600 text-white font-semibold rounded-lg hover:from-emerald-600 hover:to-teal-700 transition-all text-sm"
+              >
+                Share Code
+              </button>
+              <button
+                onClick={() => navigate('/portal/referrals')}
+                className="flex-1 py-2 bg-gray-800 text-white font-medium rounded-lg hover:bg-gray-700 transition-all text-sm"
+              >
+                View Referrals
+              </button>
+            </div>
+          </div>
+
           {/* Stats Row */}
           <div className="grid grid-cols-3 gap-3">
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-3">
@@ -142,7 +239,7 @@ const PortalDashboard = () => {
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-3">
               <div className="flex items-center gap-1 mb-1">
                 <Users className="w-3 h-3 text-blue-400" />
-                <p className="text-gray-500 text-xs">Earnings</p>
+                <p className="text-gray-500 text-xs">Ref Earn</p>
               </div>
               <p className="text-blue-400 text-lg font-bold">${referralEarnings.toFixed(2)}</p>
             </div>
@@ -150,9 +247,8 @@ const PortalDashboard = () => {
 
           {/* Referral Progress Card */}
           <div
-            onClick={() => setShowInviteModal(true)}
-            className="bg-gray-900 border border-emerald-500/20 rounded-xl p-4 cursor-pointer hover:border-emerald-500/40 transition-all"
-            data-testid="referral-code-card"
+            onClick={() => navigate('/portal/referrals')}
+            className="bg-gray-900 border border-gray-800 rounded-xl p-4 cursor-pointer hover:border-gray-700 transition-all"
           >
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2">
@@ -171,14 +267,11 @@ const PortalDashboard = () => {
                 style={{ width: `${referralSummary.progress_to_next || 0}%` }}
               ></div>
             </div>
-            <div className="flex items-center justify-between">
-              <span className="text-gray-500 text-xs">Code: <span className="text-emerald-400 font-mono">{referralSummary.referral_code || 'N/A'}</span></span>
-              {bonusInfo.referrals_until_next > 0 && (
-                <span className="text-xs text-purple-400">
-                  {bonusInfo.referrals_until_next} more for ${bonusInfo.next_bonus_amount?.toFixed(2)} bonus
-                </span>
-              )}
-            </div>
+            {bonusInfo.referrals_until_next > 0 && (
+              <span className="text-xs text-purple-400">
+                🎁 {bonusInfo.referrals_until_next} more referrals for ${bonusInfo.next_bonus_amount?.toFixed(2)} bonus!
+              </span>
+            )}
           </div>
 
           {/* Quick Actions */}
@@ -285,7 +378,7 @@ const PortalDashboard = () => {
       <InviteModal
         isOpen={showInviteModal}
         onClose={() => setShowInviteModal(false)}
-        referralCode={referralSummary.referral_code}
+        referralCode={referralCode}
       />
     </div>
   );
