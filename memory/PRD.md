@@ -3,6 +3,13 @@
 ## Original Problem Statement
 The user wants to integrate three existing systems (`chatwoot-telegram-ai-bot`, a referral/dashboard app, and Telegram bots) into a single, production-grade, staffless-first platform. The core concept is a secure web portal for users, accessed via a "magic link" sent through a Chatwoot messenger. This portal will allow users to view their financial summary, transaction history, and referral status.
 
+## Core Design Principles (Docker + VPS Ready)
+1. **Public browsing NEVER requires login** - Games list, downloads, availability visible without auth
+2. **Sensitive actions ALWAYS require login** - Game credentials, recharge, orders need authentication
+3. **No silent failures** - Every action has visible state
+4. **Automation must be resumable** - All state stored in database, survives restarts
+5. **Stateless where possible** - Sessions revalidated on page load
+
 ## Core Requirements
 - **Unified System:** A single FastAPI backend and React frontend
 - **Authentication:** Magic link-based access for clients and JWT-based login for admins
@@ -25,6 +32,7 @@ The user wants to integrate three existing systems (`chatwoot-telegram-ai-bot`, 
 - **users:** (Admins) username, email, hashed_password, is_admin
 - **orders:** order_id, client_id, type, amount, status
 - **games:** game_id, name, is_active
+- **ai_test_logs:** id, admin_id, scenario, messages, timestamp (TEST MODE)
 
 ## Test Credentials
 - **Admin:** admin@test.com / admin123
@@ -75,18 +83,50 @@ The user wants to integrate three existing systems (`chatwoot-telegram-ai-bot`, 
 - [x] Settings icon added to Portal Dashboard header
 - **Testing:** Backend APIs verified via curl, Frontend UI verified via screenshots
 
-### Phase 5: Advanced Admin & Client Features - PARTIALLY COMPLETE
-- [x] Global admin controls (toggles for withdrawals, automation) - Done in Settings
-- [x] Client-specific visibility settings (HIDDEN, SUMMARY, FULL) - Done
-- [x] Optional username/password authentication for client portal - Done
-- [ ] State persistence for Node.js middleware (deferred)
+### Phase 6: AI Test Spot & Payment Simulation Panel - COMPLETED (Jan 2026)
+- [x] **AI Test Spot** - Isolated test environment for AI behavior testing
+  - Route: /admin/ai-test
+  - Test scenarios: Client Query, Agent Response, Payment Flow, Error Handling
+  - Sample prompts for quick testing
+  - Test logs stored in database
+  - Clear TEST MODE indicator
+- [x] **Temporary Payment Check Panel** - Internal payment verification (replaces Telegram temporarily)
+  - Route: /admin/payment-panel
+  - Simulate payment creation (cash-in/cash-out)
+  - Mark payments as RECEIVED / FAILED
+  - Adjust amounts (for mismatch testing)
+  - Create test clients for testing
+  - Test stats dashboard
+  - Clear TEMPORARY warning indicator
+- [x] Backend routes at /api/admin/test/*
+- [x] Public games page as default landing (no login required)
+- **Note:** Payment Panel is TEMPORARY - will be replaced by Chatwoot/Telegram integration
 
 ---
 
-## MOCKED Integrations
+## Public vs Protected Routes
+
+### Public (No Login Required)
+- `/games` - Public games catalog
+- `/api/public/games` - Games list API
+- Download links on game cards
+- Availability labels (Available, Maintenance, Unavailable)
+
+### Protected (Login Required)
+- `/portal/*` - Client portal (requires magic link or password auth)
+- `/admin/*` - Admin dashboard (requires admin JWT)
+- Game credentials viewing
+- Recharge/Load functionality
+- Orders & transactions
+
+---
+
+## MOCKED/TEMPORARY Integrations
 - **Telegram Bot:** Endpoints exist at /api/telegram/* but not connected to real Telegram bot
 - **Chatwoot:** Entry point for magic links (integration not started)
 - **IP Tracking:** Anti-fraud IP checks require additional infrastructure to track client IPs
+- **AI Test Spot:** Mock responses only - no real AI invoked
+- **Payment Panel:** TEMPORARY - Will be replaced by Chatwoot/Telegram webhooks
 
 ## File Structure
 ```
@@ -96,22 +136,32 @@ The user wants to integrate three existing systems (`chatwoot-telegram-ai-bot`, 
 │   │   ├── admin_routes.py
 │   │   ├── auth_routes.py
 │   │   ├── client_routes.py
-│   │   ├── portal_routes.py (Updated - password auth, visibility checks)
+│   │   ├── portal_routes.py
+│   │   ├── public_routes.py
 │   │   ├── telegram_routes.py
-│   │   └── settings_routes.py
+│   │   ├── settings_routes.py
+│   │   └── test_routes.py (NEW - Phase 6: AI Test & Payment Simulation)
 │   ├── server.py
-│   ├── models.py (Updated - password auth models)
-│   ├── auth.py (Updated - client password auth functions)
+│   ├── models.py
+│   ├── auth.py
 │   ├── utils.py
 │   └── config.py
 ├── frontend/
 │   └── src/
 │       ├── pages/admin/
-│       │   ├── AdminClientDetail.js (Updated - visibility controls)
-│       │   └── AdminSettings.js
+│       │   ├── AdminDashboard.js
+│       │   ├── AdminClients.js
+│       │   ├── AdminClientDetail.js
+│       │   ├── AdminOrders.js
+│       │   ├── AdminGames.js
+│       │   ├── AdminAuditLogs.js
+│       │   ├── AdminSettings.js
+│       │   ├── AdminAITestSpot.js (NEW - Phase 6)
+│       │   └── AdminPaymentPanel.js (NEW - Phase 6)
 │       └── pages/portal/
-│           ├── ClientLogin.js (NEW - Phase 5)
-│           └── PortalSecuritySettings.js (NEW - Phase 5)
+│           ├── PortalDashboard.js
+│           ├── ClientLogin.js
+│           └── PortalSecuritySettings.js
 └── tests/
     ├── test_phase2_admin_orders.py
     └── test_phase4_settings.py
