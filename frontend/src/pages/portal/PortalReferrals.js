@@ -7,7 +7,7 @@ import InviteModal from '../../components/InviteModal';
 import { 
   ArrowLeft, Users, DollarSign, Copy, Check, Gift, Crown, 
   TrendingUp, Star, Zap, Target, ArrowRight, Info, UserCheck, 
-  UserX, Clock, ChevronRight, Sparkles, Award, Trophy
+  UserX, Clock, ChevronRight, Sparkles, Award, Trophy, MessageCircle
 } from 'lucide-react';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
