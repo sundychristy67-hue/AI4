@@ -288,36 +288,26 @@ const PortalReferrals = () => {
             </div>
           </div>
 
-          {/* Apply Referral Code */}
-          {!referralData?.referred_by && !referralData?.referral_locked && (
-            <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-              <h3 className="text-white font-semibold mb-3">Have a Referral Code?</h3>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={applyCode}
-                  onChange={(e) => setApplyCode(e.target.value.toUpperCase())}
-                  placeholder="Enter code"
-                  className="flex-1 bg-black border border-gray-700 rounded-lg px-4 py-2 text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500"
-                  maxLength={10}
-                />
-                <button
-                  onClick={handleApplyCode}
-                  disabled={applying || !applyCode.trim()}
-                  className="px-4 py-2 bg-emerald-500 text-white rounded-lg hover:bg-emerald-600 transition-colors disabled:opacity-50"
-                >
-                  {applying ? '...' : 'Apply'}
-                </button>
-              </div>
-            </div>
-          )}
-
           {referralData?.referred_by && (
             <div className="bg-gray-900 border border-emerald-500/20 rounded-xl p-4">
               <p className="text-gray-400 text-sm">You were referred by:</p>
               <p className="text-emerald-400 font-mono text-lg font-bold">{referralData.referred_by}</p>
             </div>
           )}
+
+          {/* Note about referral code application */}
+          <div className="bg-blue-500/10 border border-blue-500/30 rounded-xl p-4">
+            <div className="flex items-start gap-3">
+              <MessageCircle className="w-5 h-5 text-blue-400 flex-shrink-0 mt-0.5" />
+              <div>
+                <h4 className="text-blue-400 font-bold mb-1">How to Apply a Referral Code</h4>
+                <p className="text-gray-300 text-sm">
+                  Referral codes can only be applied when you <span className="text-blue-400 font-bold">first sign up via Messenger</span>. 
+                  Simply text the referral code when asked during registration!
+                </p>
+              </div>
+            </div>
+          </div>
 
           {/* YOUR REFERRALS LIST */}
           <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
