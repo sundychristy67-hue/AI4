@@ -87,23 +87,25 @@ class AITestConversation(BaseModel):
 async def get_ai_test_info(current_user: dict = Depends(get_current_admin)):
     """Get AI Test Spot information and available scenarios."""
     return {
-        "test_mode": True,
-        "warning": "TEST MODE - No real payments or automation triggers",
+        "test_mode": False,
+        "ai_enabled": True,
+        "model": "GPT-4o (OpenAI)",
+        "warning": "LIVE AI - Real GPT responses. No real payments or automation triggers.",
         "available_scenarios": [
             {
                 "id": "client_query",
                 "name": "Client Query Simulation",
-                "description": "Test how AI would respond to client questions"
+                "description": "Test how AI responds to client questions about the platform"
             },
             {
                 "id": "agent_response",
                 "name": "Agent Response Testing",
-                "description": "Test agent responses to various scenarios"
+                "description": "Test agent responses to various support scenarios"
             },
             {
                 "id": "payment_flow",
                 "name": "Payment Flow Testing",
-                "description": "Test payment verification flows"
+                "description": "Test payment-related queries and guidance"
             },
             {
                 "id": "error_handling",
@@ -122,6 +124,16 @@ async def get_ai_test_info(current_user: dict = Depends(get_current_admin)):
                 "User requesting cash-in of $100",
                 "User reporting incorrect balance",
                 "User asking about failed transaction"
+            ],
+            "payment_flow": [
+                "How do I make a deposit?",
+                "What payment methods do you accept?",
+                "My payment is pending, what should I do?"
+            ],
+            "error_handling": [
+                "I can't login to my account",
+                "The game is not loading",
+                "I didn't receive my bonus"
             ]
         }
     }
