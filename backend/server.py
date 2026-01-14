@@ -61,6 +61,7 @@ app.include_router(admin_router, prefix="/api")
 app.include_router(telegram_router, prefix="/api")
 app.include_router(settings_router, prefix="/api")
 app.include_router(public_router, prefix="/api")
+app.include_router(test_router, prefix="/api/admin")
 
 # Root endpoint
 @app.get("/")
