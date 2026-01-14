@@ -112,6 +112,8 @@ function App() {
               <Route path="clients/:clientId" element={<AdminClientDetail />} />
               <Route path="orders" element={<AdminOrders />} />
               <Route path="games" element={<AdminGames />} />
+              <Route path="payment-panel" element={<AdminPaymentPanel />} />
+              <Route path="ai-test" element={<AdminAITestSpot />} />
               <Route path="audit-logs" element={<AdminAuditLogs />} />
               <Route path="settings" element={<AdminSettings />} />
             </Route>
