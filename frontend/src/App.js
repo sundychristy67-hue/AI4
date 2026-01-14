@@ -36,6 +36,7 @@ import AdminAuditLogs from './pages/admin/AdminAuditLogs';
 import AdminSettings from './pages/admin/AdminSettings';
 import AdminAITestSpot from './pages/admin/AdminAITestSpot';
 import AdminPaymentPanel from './pages/admin/AdminPaymentPanel';
+import AdminTelegramSetup from './pages/admin/AdminTelegramSetup';
 
 function App() {
   return (
