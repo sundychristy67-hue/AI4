@@ -66,172 +66,221 @@ class Phase6Tester:
             return True
         return False
 
-    def test_portal_validation(self):
-        """Test portal token validation"""
+    def test_public_games_access(self):
+        """Test public games endpoint (no auth required)"""
         success, response = self.run_test(
-            "Portal Token Validation",
+            "Public Games Access",
             "GET",
-            f"portal/validate/{self.portal_token}",
+            "public/games?limit=10",
             200
         )
-        return success and response.get('valid') == True
-
-    def test_portal_wallets(self):
-        """Test portal wallets endpoint"""
-        success, response = self.run_test(
-            "Portal Wallets API",
-            "GET",
-            "portal/wallets",
-            200,
-            headers={'X-Portal-Token': self.portal_token}
-        )
         
         if success:
-            # Verify dual wallet structure
-            required_fields = ['real_balance', 'bonus_balance', 'total_in', 'total_out', 
-                             'total_real_loaded', 'total_bonus_loaded', 'total_bonus_earned']
-            for field in required_fields:
-                if field not in response:
-                    print(f"   ⚠️  Missing field: {field}")
-                    return False
-            print(f"   💰 Real Balance: ${response.get('real_balance', 0):.2f}")
-            print(f"   🎁 Bonus Balance: ${response.get('bonus_balance', 0):.2f}")
-        
-        return success
-
-    def test_portal_games(self):
-        """Test portal games endpoint"""
-        success, response = self.run_test(
-            "Portal Games API",
-            "GET",
-            "portal/games",
-            200,
-            headers={'X-Portal-Token': self.portal_token}
-        )
-        
-        if success:
-            games = response.get('games', [])
-            print(f"   🎮 Found {len(games)} games")
+            games = response if isinstance(response, list) else response.get('games', [])
+            print(f"   🎮 Found {len(games)} public games")
             for game in games[:3]:  # Show first 3 games
-                print(f"   - {game.get('name', 'Unknown')} (Credentials: {game.get('has_credentials', False)})")
+                print(f"   - {game.get('name', 'Unknown')} (Available: {game.get('availability_status', 'unknown')})")
         
         return success
 
-    def test_load_to_game_validation(self):
-        """Test load-to-game validation (should fail with insufficient balance)"""
+    def test_public_site_info(self):
+        """Test public site info endpoint"""
         success, response = self.run_test(
-            "Load to Game Validation",
+            "Public Site Info",
+            "GET",
+            "public/site-info",
+            200
+        )
+        
+        if success:
+            print(f"   🏢 Site Name: {response.get('name', 'Unknown')}")
+            print(f"   📞 Support Text: {response.get('support_text', 'N/A')}")
+        
+        return success
+
+    def test_ai_test_info(self):
+        """Test AI Test Spot info endpoint"""
+        if not self.admin_token:
+            return False
+            
+        success, response = self.run_test(
+            "AI Test Spot Info",
+            "GET",
+            "admin/test/ai-test/info",
+            200,
+            headers={'Authorization': f'Bearer {self.admin_token}'}
+        )
+        
+        if success:
+            print(f"   🤖 Test Mode: {response.get('test_mode', False)}")
+            scenarios = response.get('available_scenarios', [])
+            print(f"   📋 Available Scenarios: {len(scenarios)}")
+            for scenario in scenarios:
+                print(f"   - {scenario.get('name', 'Unknown')}")
+        
+        return success
+
+    def test_ai_test_simulate(self):
+        """Test AI Test Spot simulation"""
+        if not self.admin_token:
+            return False
+            
+        success, response = self.run_test(
+            "AI Test Simulation",
             "POST",
-            "portal/load-to-game",
-            400,  # Expecting 400 for insufficient balance
+            "admin/test/ai-test/simulate",
+            200,
             data={
-                "game_id": "test-game-id",
-                "amount": 1000.00,  # Large amount to trigger insufficient balance
-                "wallet_type": "real"
+                "messages": [
+                    {"role": "user", "content": "What is my balance?"}
+                ],
+                "test_scenario": "client_query"
             },
-            headers={'X-Portal-Token': self.portal_token}
-        )
-        return success  # 400 is expected for validation error
-
-    def test_bonus_tasks(self):
-        """Test bonus tasks endpoint"""
-        success, response = self.run_test(
-            "Portal Bonus Tasks API",
-            "GET",
-            "portal/bonus-tasks",
-            200,
-            headers={'X-Portal-Token': self.portal_token}
-        )
-        
-        if success:
-            tasks = response.get('tasks', [])
-            bonus_history = response.get('bonus_history', [])
-            wallet_balance = response.get('wallet_bonus_balance', 0)
-            
-            print(f"   📋 Active Tasks: {len(tasks)}")
-            print(f"   🏆 Bonus History: {len(bonus_history)} entries")
-            print(f"   💰 Bonus Wallet: ${wallet_balance:.2f}")
-            
-            # Check task structure
-            for task in tasks:
-                if 'id' in task and 'title' in task and 'progress' in task:
-                    print(f"   - {task['title']}: {task['progress']}/{task.get('target', 0)}")
-        
-        return success
-
-    def test_admin_dashboard_stats(self):
-        """Test admin dashboard stats with bonus distributed"""
-        if not self.admin_token:
-            return False
-            
-        success, response = self.run_test(
-            "Admin Dashboard Stats",
-            "GET",
-            "admin/dashboard-stats",
-            200,
             headers={'Authorization': f'Bearer {self.admin_token}'}
         )
         
         if success:
-            # Check for bonus distributed field
-            bonus_distributed = response.get('total_bonus_distributed', 0)
-            earnings_distributed = response.get('total_earnings_distributed', 0)
-            print(f"   💰 Total Bonus Distributed: ${bonus_distributed:.2f}")
-            print(f"   💸 Total Earnings Distributed: ${earnings_distributed:.2f}")
-            print(f"   👥 Total Clients: {response.get('total_clients', 0)}")
-            print(f"   📊 Pending Orders: {response.get('pending_orders', 0)}")
+            print(f"   🤖 Test Mode: {response.get('test_mode', False)}")
+            print(f"   💬 Response: {response.get('response', {}).get('content', 'No response')[:50]}...")
+            print(f"   🆔 Test ID: {response.get('test_id', 'N/A')}")
         
         return success
 
-    def test_admin_client_detail(self):
-        """Test admin client detail with wallet balances"""
+    def test_create_test_client(self):
+        """Test creating a test client for payment simulation"""
         if not self.admin_token:
             return False
             
         success, response = self.run_test(
-            "Admin Client Detail",
-            "GET",
-            f"admin/clients/{self.client_id}",
+            "Create Test Client",
+            "POST",
+            "admin/test/data/create-test-client",
             200,
+            data={"display_name": "Phase6 Test Client"},
             headers={'Authorization': f'Bearer {self.admin_token}'}
         )
         
         if success:
-            wallet = response.get('wallet', {})
             client = response.get('client', {})
-            
-            print(f"   👤 Client: {client.get('display_name', 'Unknown')}")
-            print(f"   💰 Real Balance: ${wallet.get('real_balance', 0):.2f}")
-            print(f"   🎁 Bonus Balance: ${wallet.get('bonus_balance', 0):.2f}")
-            print(f"   📈 Referral Count: {client.get('valid_referral_count', 0)}")
-            print(f"   🎯 Referral Tier: {client.get('referral_tier', 0)}")
+            self.test_client_id = client.get('client_id')
+            print(f"   👤 Created Client: {client.get('display_name', 'Unknown')}")
+            print(f"   🆔 Client ID: {self.test_client_id}")
         
         return success
 
-    def test_admin_wallet_adjustment(self):
-        """Test admin wallet adjustment functionality"""
-        if not self.admin_token:
+    def test_payment_simulate(self):
+        """Test payment simulation"""
+        if not self.admin_token or not self.test_client_id:
             return False
             
-        # Test bonus wallet adjustment
         success, response = self.run_test(
-            "Admin Bonus Wallet Adjustment",
+            "Payment Simulation",
             "POST",
-            f"admin/clients/{self.client_id}/adjust-wallet",
+            "admin/test/payment/simulate",
             200,
             data={
-                "amount": 5.00,
-                "wallet_type": "bonus",
-                "reason": "Test bonus adjustment for Phase 1 testing"
+                "client_id": self.test_client_id,
+                "amount": 50.00,
+                "payment_type": "cashin",
+                "payment_method": "GCash",
+                "notes": "Phase 6 test payment"
             },
             headers={'Authorization': f'Bearer {self.admin_token}'}
         )
         
         if success:
-            new_balances = response.get('new_balances', {})
-            print(f"   ✅ Adjustment successful")
-            print(f"   💰 New Real Balance: ${new_balances.get('real_balance', 0):.2f}")
-            print(f"   🎁 New Bonus Balance: ${new_balances.get('bonus_balance', 0):.2f}")
+            self.test_order_id = response.get('order_id')
+            print(f"   💰 Amount: ${response.get('amount', 0):.2f}")
+            print(f"   📋 Order ID: {self.test_order_id}")
+            print(f"   ⚠️  Test Mode: {response.get('test_mode', False)}")
+        
+        return success
+
+    def test_payment_pending(self):
+        """Test getting pending payments"""
+        if not self.admin_token:
+            return False
+            
+        success, response = self.run_test(
+            "Pending Payments",
+            "GET",
+            "admin/test/payment/pending?test_only=true",
+            200,
+            headers={'Authorization': f'Bearer {self.admin_token}'}
+        )
+        
+        if success:
+            orders = response.get('orders', [])
+            print(f"   📋 Pending Orders: {len(orders)}")
+            print(f"   📊 Total: {response.get('total', 0)}")
+        
+        return success
+
+    def test_payment_action_received(self):
+        """Test marking payment as received"""
+        if not self.admin_token or not self.test_order_id:
+            return False
+            
+        success, response = self.run_test(
+            "Mark Payment Received",
+            "POST",
+            "admin/test/payment/action",
+            200,
+            data={
+                "order_id": self.test_order_id,
+                "action": "received"
+            },
+            headers={'Authorization': f'Bearer {self.admin_token}'}
+        )
+        
+        if success:
+            print(f"   ✅ Action: {response.get('action', 'unknown')}")
+            print(f"   💰 Message: {response.get('message', 'N/A')}")
+            wallet = response.get('new_wallet_balance', {})
+            print(f"   💵 Real Balance: ${wallet.get('real', 0):.2f}")
+            print(f"   🎁 Bonus Balance: ${wallet.get('bonus', 0):.2f}")
+        
+        return success
+
+    def test_payment_stats(self):
+        """Test payment panel statistics"""
+        if not self.admin_token:
+            return False
+            
+        success, response = self.run_test(
+            "Payment Panel Stats",
+            "GET",
+            "admin/test/data/stats",
+            200,
+            headers={'Authorization': f'Bearer {self.admin_token}'}
+        )
+        
+        if success:
+            stats = response.get('stats', {})
+            print(f"   👥 Test Clients: {stats.get('test_clients', 0)}")
+            print(f"   📋 Test Orders: {stats.get('test_orders', 0)}")
+            print(f"   🤖 AI Test Conversations: {stats.get('ai_test_conversations', 0)}")
+            print(f"   ⏳ Pending Payments: {stats.get('pending_payments', 0)}")
+        
+        return success
+
+    def test_ai_test_logs(self):
+        """Test AI test logs endpoint"""
+        if not self.admin_token:
+            return False
+            
+        success, response = self.run_test(
+            "AI Test Logs",
+            "GET",
+            "admin/test/ai-test/logs?limit=10",
+            200,
+            headers={'Authorization': f'Bearer {self.admin_token}'}
+        )
+        
+        if success:
+            logs = response.get('logs', [])
+            print(f"   📝 Test Logs: {len(logs)}")
+            print(f"   🤖 Test Mode: {response.get('test_mode', False)}")
         
         return success
 
