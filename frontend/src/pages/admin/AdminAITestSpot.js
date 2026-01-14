@@ -84,18 +84,32 @@ const AdminAITestSpot = () => {
 
   return (
     <div className="space-y-6" data-testid="ai-test-spot">
-      {/* Test Mode Warning Banner */}
-      <div className="bg-yellow-500/20 border border-yellow-500/30 rounded-xl p-4">
-        <div className="flex items-center gap-3">
-          <AlertTriangle className="w-6 h-6 text-yellow-400 flex-shrink-0" />
-          <div>
-            <h3 className="text-yellow-400 font-bold">TEST MODE ACTIVE</h3>
-            <p className="text-yellow-300/80 text-sm">
-              This is an isolated test environment. No real AI is invoked. No real payments or automation triggers.
-            </p>
+      {/* AI Status Banner */}
+      {testInfo?.ai_enabled ? (
+        <div className="bg-emerald-500/20 border border-emerald-500/30 rounded-xl p-4">
+          <div className="flex items-center gap-3">
+            <Sparkles className="w-6 h-6 text-emerald-400 flex-shrink-0" />
+            <div>
+              <h3 className="text-emerald-400 font-bold">🤖 LIVE AI CONNECTED - {testInfo?.model || 'GPT-4o'}</h3>
+              <p className="text-emerald-300/80 text-sm">
+                Real GPT responses. No real payments or automation triggers in this test environment.
+              </p>
+            </div>
           </div>
         </div>
-      </div>
+      ) : (
+        <div className="bg-yellow-500/20 border border-yellow-500/30 rounded-xl p-4">
+          <div className="flex items-center gap-3">
+            <AlertTriangle className="w-6 h-6 text-yellow-400 flex-shrink-0" />
+            <div>
+              <h3 className="text-yellow-400 font-bold">TEST MODE ACTIVE</h3>
+              <p className="text-yellow-300/80 text-sm">
+                This is an isolated test environment. No real AI is invoked. No real payments or automation triggers.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Chat Area */}
