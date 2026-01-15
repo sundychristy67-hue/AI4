@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from config import settings
-from database import connect_to_mongo, close_mongo_connection
+from database import connect_to_db, close_db_connection
 import logging
 
 # Import routers
@@ -41,18 +41,18 @@ app.add_middleware(
 # Startup and shutdown events
 @app.on_event("startup")
 async def startup_event():
-    await connect_to_mongo()
+    await connect_to_db()
     logger.info("Application startup complete")
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    await close_mongo_connection()
+    await close_db_connection()
     logger.info("Application shutdown complete")
 
 # Health check endpoint
 @app.get("/api/health")
 async def health_check():
-    return {"status": "healthy", "message": "Portal & Automation API is running"}
+    return {"status": "healthy", "message": "Portal & Automation API is running", "database": "PostgreSQL"}
 
 # Include all routers with /api prefix
 app.include_router(auth_router, prefix="/api")

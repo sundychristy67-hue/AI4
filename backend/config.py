@@ -7,8 +7,11 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
 class Settings(BaseSettings):
-    # MongoDB
-    mongo_url: str = os.environ.get('MONGO_URL', 'mongodb://localhost:27017')
+    # PostgreSQL
+    database_url: str = os.environ.get('DATABASE_URL', 'postgresql://postgres:postgres@localhost:5432/portal_db')
+    
+    # Legacy MongoDB support (kept for reference, not used)
+    mongo_url: str = os.environ.get('MONGO_URL', '')
     db_name: str = os.environ.get('DB_NAME', 'portal_database')
     
     # JWT
