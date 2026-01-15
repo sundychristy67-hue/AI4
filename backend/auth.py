@@ -5,8 +5,8 @@ from passlib.context import CryptContext
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from config import settings
-from database import get_database
-from utils import generate_id, get_current_utc_iso
+from database import fetch_one, execute, row_to_dict
+from utils import generate_id, get_current_utc, get_current_utc_iso
 import logging
 
 logger = logging.getLogger(__name__)
@@ -44,12 +44,14 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
     except JWTError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid token')
     
-    db = await get_database()
-    user = await db.users.find_one({'id': user_id}, {'_id': 0, 'password_hash': 0})
+    user = await fetch_one(
+        "SELECT id, email, username, referral_code, referred_by, role, is_active, is_verified, created_at FROM users WHERE id = $1",
+        user_id
+    )
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='User not found')
     
-    return user
+    return row_to_dict(user)
 
 async def get_current_admin(current_user: dict = Depends(get_current_user)):
     if current_user.get('role') != 'admin':
@@ -65,20 +67,16 @@ async def verify_internal_api_key(x_internal_api_key: str = Header(None)):
 
 async def create_portal_session(client_id: str) -> dict:
     """Create a new portal session for a client."""
-    db = await get_database()
-    
     token = generate_id()
     expires_at = datetime.now(timezone.utc) + timedelta(hours=settings.portal_token_expire_hours)
     
-    session_doc = {
-        'token': token,
-        'client_id': client_id,
-        'created_at': get_current_utc_iso(),
-        'expires_at': expires_at.isoformat(),
-        'is_valid': True
-    }
-    
-    await db.portal_sessions.insert_one(session_doc)
+    await execute(
+        """
+        INSERT INTO portal_sessions (token, client_id, expires_at, is_active, created_at)
+        VALUES ($1, $2, $3, TRUE, $4)
+        """,
+        token, client_id, expires_at, get_current_utc()
+    )
     
     portal_url = f"{settings.portal_base_url}/p/{token}"
     
@@ -91,23 +89,39 @@ async def create_portal_session(client_id: str) -> dict:
 
 async def validate_portal_token(token: str) -> Optional[dict]:
     """Validate a portal token and return the client if valid."""
-    db = await get_database()
-    
-    session = await db.portal_sessions.find_one({'token': token}, {'_id': 0})
+    session = await fetch_one(
+        "SELECT * FROM portal_sessions WHERE token = $1", token
+    )
     if not session:
         return None
     
+    session = row_to_dict(session)
+    
     # Check expiration
-    expires_at = datetime.fromisoformat(session['expires_at'].replace('Z', '+00:00'))
+    expires_at = session['expires_at']
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
     if expires_at < datetime.now(timezone.utc):
         return None
     
-    # Check if valid
-    if not session.get('is_valid', True):
+    # Check if active
+    if not session.get('is_active', True):
         return None
     
     # Get client
-    client = await db.clients.find_one({'client_id': session['client_id']}, {'_id': 0})
+    client = await fetch_one(
+        "SELECT * FROM clients WHERE client_id = $1", session['client_id']
+    )
+    if not client:
+        return None
+    
+    client = row_to_dict(client)
+    # Convert datetime fields to ISO strings
+    if client.get('created_at'):
+        client['created_at'] = client['created_at'].isoformat()
+    if client.get('last_active_at'):
+        client['last_active_at'] = client['last_active_at'].isoformat()
+    
     return client
 
 async def get_portal_client(x_portal_token: str = Header(None)):
@@ -123,10 +137,9 @@ async def get_portal_client(x_portal_token: str = Header(None)):
 
 async def revoke_client_sessions(client_id: str):
     """Revoke all portal sessions for a client."""
-    db = await get_database()
-    await db.portal_sessions.update_many(
-        {'client_id': client_id},
-        {'$set': {'is_valid': False}}
+    await execute(
+        "UPDATE portal_sessions SET is_active = FALSE WHERE client_id = $1",
+        client_id
     )
 
 # ==================== CLIENT PASSWORD AUTH ====================
@@ -141,12 +154,14 @@ async def create_client_access_token(client_id: str) -> str:
 
 async def authenticate_client_password(username: str, password: str) -> Optional[dict]:
     """Authenticate a client using username/password."""
-    db = await get_database()
-    
     # Find client by username
-    client = await db.clients.find_one({'username': username.lower()}, {'_id': 0})
+    client = await fetch_one(
+        "SELECT * FROM clients WHERE LOWER(username) = LOWER($1)", username
+    )
     if not client:
         return None
+    
+    client = row_to_dict(client)
     
     # Verify password
     if not client.get('password_hash'):
@@ -158,6 +173,12 @@ async def authenticate_client_password(username: str, password: str) -> Optional
     # Check if client is active
     if client.get('status') == 'banned':
         return None
+    
+    # Convert datetime fields
+    if client.get('created_at'):
+        client['created_at'] = client['created_at'].isoformat()
+    if client.get('last_active_at'):
+        client['last_active_at'] = client['last_active_at'].isoformat()
     
     return client
 
@@ -176,13 +197,22 @@ async def get_portal_client_from_jwt(credentials: HTTPAuthorizationCredentials =
     except JWTError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid token')
     
-    db = await get_database()
-    client = await db.clients.find_one({'client_id': client_id}, {'_id': 0})
+    client = await fetch_one(
+        "SELECT * FROM clients WHERE client_id = $1", client_id
+    )
     if not client:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Client not found')
     
+    client = row_to_dict(client)
+    
     if client.get('status') == 'banned':
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Account is banned')
+    
+    # Convert datetime fields
+    if client.get('created_at'):
+        client['created_at'] = client['created_at'].isoformat()
+    if client.get('last_active_at'):
+        client['last_active_at'] = client['last_active_at'].isoformat()
     
     return client
 
@@ -209,12 +239,19 @@ async def get_portal_client_flexible(
             token_type: str = payload.get('type')
             
             if token_type == 'client_auth' and client_id:
-                db = await get_database()
-                client = await db.clients.find_one({'client_id': client_id}, {'_id': 0})
-                if client and client.get('status') != 'banned':
-                    return client
+                client = await fetch_one(
+                    "SELECT * FROM clients WHERE client_id = $1", client_id
+                )
+                if client:
+                    client = row_to_dict(client)
+                    if client.get('status') != 'banned':
+                        # Convert datetime fields
+                        if client.get('created_at'):
+                            client['created_at'] = client['created_at'].isoformat()
+                        if client.get('last_active_at'):
+                            client['last_active_at'] = client['last_active_at'].isoformat()
+                        return client
         except JWTError:
             pass
     
     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid or expired authentication')
-
