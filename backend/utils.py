@@ -1,8 +1,9 @@
 import uuid
 import random
 import string
+import json
 from datetime import datetime, timezone
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 def generate_id() -> str:
     """Generate a UUID string."""
@@ -17,11 +18,31 @@ def get_current_utc_iso() -> str:
     """Get current UTC timestamp as ISO string."""
     return datetime.now(timezone.utc).isoformat()
 
+def get_current_utc() -> datetime:
+    """Get current UTC datetime."""
+    return datetime.now(timezone.utc)
+
 def mask_credential(credential: str) -> str:
     """Mask a credential showing only first 2 and last 2 characters."""
     if not credential or len(credential) < 5:
         return '***'
     return f"{credential[:2]}{'*' * (len(credential) - 4)}{credential[-2:]}"
+
+def row_to_dict(row) -> Optional[Dict]:
+    """Convert asyncpg Record to dictionary."""
+    if row is None:
+        return None
+    return dict(row)
+
+def rows_to_list(rows) -> List[Dict]:
+    """Convert list of asyncpg Records to list of dictionaries."""
+    return [dict(row) for row in rows] if rows else []
+
+def serialize_datetime(obj):
+    """JSON serializer for datetime objects."""
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    raise TypeError(f"Type {type(obj)} not serializable")
 
 # ==================== SETTINGS CACHE ====================
 
@@ -31,11 +52,13 @@ _settings_cache = {
     "ttl_seconds": 60  # Cache for 60 seconds
 }
 
-async def get_global_settings(db) -> Dict[str, Any]:
+async def get_global_settings(pool) -> Dict[str, Any]:
     """
     Get global settings from database with caching.
     Returns default settings if not found.
     """
+    from database import fetch_one
+    
     now = datetime.now(timezone.utc)
     
     # Check cache
@@ -45,11 +68,21 @@ async def get_global_settings(db) -> Dict[str, Any]:
             return _settings_cache["data"]
     
     # Fetch from database
-    settings = await db.global_settings.find_one({"_id": "global"}, {"_id": 0})
+    row = await fetch_one(
+        "SELECT * FROM global_settings WHERE id = 'global'"
+    )
     
-    if not settings:
+    if not row:
         # Return defaults
         settings = get_default_settings()
+    else:
+        settings = row_to_dict(row)
+        # Parse JSONB fields
+        for field in ['referral_tier_config', 'bonus_rules', 'anti_fraud', 
+                      'active_referral_criteria', 'first_time_greeting', 'telegram_config']:
+            if field in settings and settings[field]:
+                if isinstance(settings[field], str):
+                    settings[field] = json.loads(settings[field])
     
     # Update cache
     _settings_cache["data"] = settings
@@ -109,14 +142,12 @@ def get_default_settings() -> Dict[str, Any]:
             "auto_flag_suspicious": True,
             "auto_reject_fraud": False
         },
-        # NEW: Active Referral Criteria
         "active_referral_criteria": {
             "min_deposits_required": 1,
             "min_total_deposit_amount": 10.0,
             "activity_window_days": 30,
             "require_recent_activity": True
         },
-        # NEW: First-Time Client Greeting Messages
         "first_time_greeting": {
             "enabled": True,
             "messages": [
@@ -151,7 +182,7 @@ BONUS_RULES = {
     "subsequent_bonus": 2.0
 }
 
-async def calculate_referral_bonus_async(db, valid_referral_count: int, already_claimed_milestones: list = None) -> Dict[str, Any]:
+async def calculate_referral_bonus_async(pool, valid_referral_count: int, already_claimed_milestones: list = None) -> Dict[str, Any]:
     """
     Calculate referral bonus based on valid referral count using DB settings.
     Uses milestone-based system from global settings.
@@ -159,7 +190,7 @@ async def calculate_referral_bonus_async(db, valid_referral_count: int, already_
     if already_claimed_milestones is None:
         already_claimed_milestones = []
     
-    settings = await get_global_settings(db)
+    settings = await get_global_settings(pool)
     bonus_rules = settings.get("bonus_rules", {})
     
     if not bonus_rules.get("enabled", True):
@@ -245,11 +276,11 @@ def calculate_referral_bonus(valid_referral_count: int, already_claimed_bonuses:
         "referrals_until_next": next_bonus_at - valid_referral_count
     }
 
-async def calculate_referral_tier_async(db, valid_referral_count: int) -> Dict[str, Any]:
+async def calculate_referral_tier_async(pool, valid_referral_count: int) -> Dict[str, Any]:
     """
     Calculate referral tier using DB settings.
     """
-    settings = await get_global_settings(db)
+    settings = await get_global_settings(pool)
     tier_config = settings.get("referral_tier_config", {})
     tiers = tier_config.get("tiers", [])
     
@@ -317,12 +348,14 @@ def calculate_referral_tier(valid_referral_count: int) -> Dict[str, Any]:
 
 # ==================== ANTI-FRAUD CHECKS ====================
 
-async def check_referral_fraud(db, referrer_client_id: str, referred_client_id: str, ip_address: str = None) -> Dict[str, Any]:
+async def check_referral_fraud(pool, referrer_client_id: str, referred_client_id: str, ip_address: str = None) -> Dict[str, Any]:
     """
     Check for potential referral fraud based on anti-fraud settings.
     Returns dict with 'is_suspicious', 'flags', and 'should_reject'.
     """
-    settings = await get_global_settings(db)
+    from database import fetch_one
+    
+    settings = await get_global_settings(pool)
     anti_fraud = settings.get("anti_fraud", {})
     
     if not anti_fraud.get("enabled", True):
@@ -332,54 +365,45 @@ async def check_referral_fraud(db, referrer_client_id: str, referred_client_id: 
     
     # Check IP-based fraud
     if ip_address and anti_fraud.get("flag_same_ip_referrals", True):
-        max_per_ip = anti_fraud.get("max_referrals_per_ip", 3)
-        cooldown_hours = anti_fraud.get("ip_cooldown_hours", 24)
-        
-        # Count referrals from this IP in cooldown period
-        cutoff = datetime.now(timezone.utc).isoformat()
-        # In a real implementation, you'd track IP addresses in referral records
-        # For now, we'll just flag if the setting is enabled
-        
-        # Check if referred client has same IP as referrer (requires IP tracking)
-        referrer = await db.clients.find_one({"client_id": referrer_client_id}, {"_id": 0})
-        referred = await db.clients.find_one({"client_id": referred_client_id}, {"_id": 0})
+        referrer = await fetch_one(
+            "SELECT last_ip FROM clients WHERE client_id = $1", referrer_client_id
+        )
+        referred = await fetch_one(
+            "SELECT last_ip, created_at FROM clients WHERE client_id = $1", referred_client_id
+        )
         
         if referrer and referred:
-            referrer_ip = referrer.get("last_ip")
-            referred_ip = referred.get("last_ip") or ip_address
+            referrer_ip = referrer['last_ip']
+            referred_ip = referred['last_ip'] or ip_address
             if referrer_ip and referred_ip and referrer_ip == referred_ip:
                 flags.append("SAME_IP_AS_REFERRER")
     
     # Check rapid signups
     if anti_fraud.get("flag_rapid_signups", True):
         threshold_minutes = anti_fraud.get("rapid_signup_threshold_minutes", 5)
-        
-        # Check if referred account was created very recently after referral link was shared
-        referred = await db.clients.find_one({"client_id": referred_client_id}, {"_id": 0})
-        if referred:
-            created_at = referred.get("created_at")
-            if created_at:
-                try:
-                    created_dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-                    age_minutes = (datetime.now(timezone.utc) - created_dt).total_seconds() / 60
-                    if age_minutes < threshold_minutes:
-                        flags.append("RAPID_SIGNUP")
-                except:
-                    pass
+        referred = await fetch_one(
+            "SELECT created_at FROM clients WHERE client_id = $1", referred_client_id
+        )
+        if referred and referred['created_at']:
+            created_dt = referred['created_at']
+            if created_dt.tzinfo is None:
+                created_dt = created_dt.replace(tzinfo=timezone.utc)
+            age_minutes = (datetime.now(timezone.utc) - created_dt).total_seconds() / 60
+            if age_minutes < threshold_minutes:
+                flags.append("RAPID_SIGNUP")
     
     # Check minimum account age
     min_age_hours = anti_fraud.get("min_account_age_hours", 1)
-    referred = await db.clients.find_one({"client_id": referred_client_id}, {"_id": 0})
-    if referred:
-        created_at = referred.get("created_at")
-        if created_at:
-            try:
-                created_dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-                age_hours = (datetime.now(timezone.utc) - created_dt).total_seconds() / 3600
-                if age_hours < min_age_hours:
-                    flags.append("ACCOUNT_TOO_NEW")
-            except:
-                pass
+    referred = await fetch_one(
+        "SELECT created_at FROM clients WHERE client_id = $1", referred_client_id
+    )
+    if referred and referred['created_at']:
+        created_dt = referred['created_at']
+        if created_dt.tzinfo is None:
+            created_dt = created_dt.replace(tzinfo=timezone.utc)
+        age_hours = (datetime.now(timezone.utc) - created_dt).total_seconds() / 3600
+        if age_hours < min_age_hours:
+            flags.append("ACCOUNT_TOO_NEW")
     
     is_suspicious = len(flags) > 0
     should_reject = is_suspicious and anti_fraud.get("auto_reject_fraud", False)
@@ -393,20 +417,27 @@ async def check_referral_fraud(db, referrer_client_id: str, referred_client_id: 
 
 # ==================== WALLET CALCULATIONS ====================
 
-async def calculate_wallet_balances(db, client_id: str) -> Dict[str, float]:
+async def calculate_wallet_balances(pool, client_id: str) -> Dict[str, float]:
     """
     Calculate real and bonus wallet balances from ledger.
     
     Real Wallet: IN - OUT - REAL_LOAD + REFERRAL_EARN + ADJUST
     Bonus Wallet: BONUS_EARN - BONUS_LOAD + BONUS_ADJUST
     """
-    pipeline = [
-        {'$match': {'client_id': client_id, 'status': 'confirmed'}},
-        {'$group': {'_id': '$type', 'total': {'$sum': '$amount'}}}
-    ]
+    from database import fetch_all
     
-    results = await db.ledger_transactions.aggregate(pipeline).to_list(20)
-    totals = {r['_id']: r['total'] for r in results}
+    # Get confirmed transaction totals by type
+    rows = await fetch_all(
+        """
+        SELECT type, SUM(amount) as total 
+        FROM ledger_transactions 
+        WHERE client_id = $1 AND status = 'confirmed'
+        GROUP BY type
+        """,
+        client_id
+    )
+    
+    totals = {row['type']: row['total'] or 0 for row in rows}
     
     # Real wallet calculation
     total_in = totals.get('IN', 0)
@@ -425,12 +456,16 @@ async def calculate_wallet_balances(db, client_id: str) -> Dict[str, float]:
     bonus_balance = bonus_earn - bonus_load + bonus_adjust
     
     # Pending amounts
-    pending_pipeline = [
-        {'$match': {'client_id': client_id, 'status': 'pending'}},
-        {'$group': {'_id': '$type', 'total': {'$sum': '$amount'}}}
-    ]
-    pending_results = await db.ledger_transactions.aggregate(pending_pipeline).to_list(20)
-    pending_totals = {r['_id']: r['total'] for r in pending_results}
+    pending_rows = await fetch_all(
+        """
+        SELECT type, SUM(amount) as total 
+        FROM ledger_transactions 
+        WHERE client_id = $1 AND status = 'pending'
+        GROUP BY type
+        """,
+        client_id
+    )
+    pending_totals = {row['type']: row['total'] or 0 for row in pending_rows}
     
     return {
         'real_balance': max(0, real_balance),
@@ -447,17 +482,23 @@ async def calculate_wallet_balances(db, client_id: str) -> Dict[str, float]:
 
 # ==================== REFERRAL APPLICATION ====================
 
-async def apply_referral_code(db, client_id: str, referral_code: str) -> dict:
+async def apply_referral_code(pool, client_id: str, referral_code: str) -> dict:
     """
     Apply a referral code to a client.
     Returns {'success': bool, 'message': str}
     """
+    from database import fetch_one, execute
+    
     referral_code = referral_code.upper().strip()
     
     # Get the client
-    client = await db.clients.find_one({'client_id': client_id}, {'_id': 0})
+    client = await fetch_one(
+        "SELECT * FROM clients WHERE client_id = $1", client_id
+    )
     if not client:
         return {'success': False, 'message': 'Client not found'}
+    
+    client = row_to_dict(client)
     
     # Check if referral already locked
     if client.get('referral_locked'):
@@ -468,9 +509,13 @@ async def apply_referral_code(db, client_id: str, referral_code: str) -> dict:
         return {'success': False, 'message': 'Already have a referral code applied'}
     
     # Find the referrer
-    referrer = await db.clients.find_one({'referral_code': referral_code}, {'_id': 0})
+    referrer = await fetch_one(
+        "SELECT * FROM clients WHERE referral_code = $1", referral_code
+    )
     if not referrer:
         return {'success': False, 'message': 'Invalid referral code'}
+    
+    referrer = row_to_dict(referrer)
     
     # Cannot refer yourself
     if referrer['client_id'] == client_id:
@@ -478,52 +523,46 @@ async def apply_referral_code(db, client_id: str, referral_code: str) -> dict:
     
     # Check for circular referrals (A→B→A)
     if referrer.get('referred_by_code'):
-        # Get referrer's referrer
-        referrer_referrer = await db.clients.find_one(
-            {'referral_code': referrer['referred_by_code']},
-            {'_id': 0, 'client_id': 1}
+        referrer_referrer = await fetch_one(
+            "SELECT client_id FROM clients WHERE referral_code = $1",
+            referrer['referred_by_code']
         )
         if referrer_referrer and referrer_referrer['client_id'] == client_id:
             return {'success': False, 'message': 'Circular referrals are not allowed'}
     
     # Apply the referral
-    await db.clients.update_one(
-        {'client_id': client_id},
-        {'$set': {'referred_by_code': referral_code}}
+    await execute(
+        "UPDATE clients SET referred_by_code = $1 WHERE client_id = $2",
+        referral_code, client_id
     )
     
     # Create referral record
-    referral_doc = {
-        'id': generate_id(),
-        'referrer_client_id': referrer['client_id'],
-        'referred_client_id': client_id,
-        'status': 'pending',  # Will become 'valid' after first deposit
-        'total_deposits': 0,
-        'fraud_flags': [],
-        'created_at': get_current_utc_iso()
-    }
-    
+    referral_id = generate_id()
     try:
-        await db.client_referrals.insert_one(referral_doc)
+        await execute(
+            """
+            INSERT INTO client_referrals (id, referrer_client_id, referred_client_id, status, total_deposits, created_at)
+            VALUES ($1, $2, $3, 'pending', 0, $4)
+            """,
+            referral_id, referrer['client_id'], client_id, get_current_utc()
+        )
     except Exception:
         pass  # May already exist
     
     # Update referrer's referral count
-    await db.clients.update_one(
-        {'client_id': referrer['client_id']},
-        {'$inc': {'referral_count': 1}}
+    await execute(
+        "UPDATE clients SET referral_count = referral_count + 1 WHERE client_id = $1",
+        referrer['client_id']
     )
     
     return {'success': True, 'message': 'Referral code applied successfully'}
 
-async def process_referral_on_deposit(db, client_id: str, deposit_amount: float) -> Dict[str, Any]:
+async def process_referral_on_deposit(pool, client_id: str, deposit_amount: float) -> Dict[str, Any]:
     """
     Process referral-related actions when a client makes a deposit.
-    - Lock referral code application
-    - Activate referral if first deposit
-    - Credit referrer earnings
-    - Check and credit referral bonuses
     """
+    from database import fetch_one, execute
+    
     result = {
         'referral_locked': False,
         'referral_activated': False,
@@ -531,54 +570,63 @@ async def process_referral_on_deposit(db, client_id: str, deposit_amount: float)
         'bonus_credited': 0
     }
     
-    client = await db.clients.find_one({'client_id': client_id}, {'_id': 0})
+    client = await fetch_one(
+        "SELECT * FROM clients WHERE client_id = $1", client_id
+    )
     if not client:
         return result
     
+    client = row_to_dict(client)
+    
     # Lock referral application after first deposit
     if not client.get('referral_locked'):
-        await db.clients.update_one(
-            {'client_id': client_id},
-            {'$set': {'referral_locked': True}}
+        await execute(
+            "UPDATE clients SET referral_locked = TRUE WHERE client_id = $1",
+            client_id
         )
         result['referral_locked'] = True
     
     # Check if client has a referrer
     if client.get('referred_by_code'):
-        referrer = await db.clients.find_one(
-            {'referral_code': client['referred_by_code']},
-            {'_id': 0}
+        referrer = await fetch_one(
+            "SELECT * FROM clients WHERE referral_code = $1",
+            client['referred_by_code']
         )
         
         if referrer:
+            referrer = row_to_dict(referrer)
+            
             # Get referral record
-            referral = await db.client_referrals.find_one(
-                {'referred_client_id': client_id},
-                {'_id': 0}
+            referral = await fetch_one(
+                "SELECT * FROM client_referrals WHERE referred_client_id = $1",
+                client_id
             )
             
             if referral:
+                referral = row_to_dict(referral)
+                
                 # Update referral status to valid on first deposit
                 if referral.get('status') == 'pending':
-                    await db.client_referrals.update_one(
-                        {'referred_client_id': client_id},
-                        {'$set': {'status': 'valid'}}
+                    await execute(
+                        "UPDATE client_referrals SET status = 'valid' WHERE referred_client_id = $1",
+                        client_id
                     )
                     result['referral_activated'] = True
                     
                     # Increment valid referral count
-                    await db.clients.update_one(
-                        {'client_id': referrer['client_id']},
-                        {'$inc': {'valid_referral_count': 1}}
+                    await execute(
+                        "UPDATE clients SET valid_referral_count = valid_referral_count + 1 WHERE client_id = $1",
+                        referrer['client_id']
                     )
                     
                     # Check and process referral bonuses for referrer
-                    updated_referrer = await db.clients.find_one(
-                        {'client_id': referrer['client_id']},
-                        {'_id': 0}
+                    updated_referrer = await fetch_one(
+                        "SELECT * FROM clients WHERE client_id = $1",
+                        referrer['client_id']
                     )
                     
                     if updated_referrer:
+                        updated_referrer = row_to_dict(updated_referrer)
                         bonus_info = calculate_referral_bonus(
                             updated_referrer.get('valid_referral_count', 0),
                             updated_referrer.get('bonus_claims', 0)
@@ -586,32 +634,30 @@ async def process_referral_on_deposit(db, client_id: str, deposit_amount: float)
                         
                         if bonus_info['unclaimed_bonus'] > 0:
                             # Credit bonus to referrer's bonus wallet
-                            bonus_tx = {
-                                'transaction_id': generate_id(),
-                                'client_id': referrer['client_id'],
-                                'type': 'BONUS_EARN',
-                                'amount': bonus_info['unclaimed_bonus'],
-                                'wallet_type': 'bonus',
-                                'status': 'confirmed',
-                                'source': 'referral_bonus',
-                                'reason': f"Referral milestone bonus ({updated_referrer.get('valid_referral_count', 0)} valid referrals)",
-                                'created_at': get_current_utc_iso(),
-                                'confirmed_at': get_current_utc_iso()
-                            }
-                            await db.ledger_transactions.insert_one(bonus_tx)
+                            bonus_tx_id = generate_id()
+                            await execute(
+                                """
+                                INSERT INTO ledger_transactions 
+                                (transaction_id, client_id, type, amount, wallet_type, status, source, reason, created_at, confirmed_at)
+                                VALUES ($1, $2, 'BONUS_EARN', $3, 'bonus', 'confirmed', 'referral_bonus', $4, $5, $5)
+                                """,
+                                bonus_tx_id, referrer['client_id'], bonus_info['unclaimed_bonus'],
+                                f"Referral milestone bonus ({updated_referrer.get('valid_referral_count', 0)} valid referrals)",
+                                get_current_utc()
+                            )
                             
                             # Update bonus claims count
-                            await db.clients.update_one(
-                                {'client_id': referrer['client_id']},
-                                {'$inc': {'bonus_claims': 1}}
+                            await execute(
+                                "UPDATE clients SET bonus_claims = bonus_claims + 1 WHERE client_id = $1",
+                                referrer['client_id']
                             )
                             
                             result['bonus_credited'] = bonus_info['unclaimed_bonus']
                 
                 # Update total deposits in referral record
-                await db.client_referrals.update_one(
-                    {'referred_client_id': client_id},
-                    {'$inc': {'total_deposits': deposit_amount}}
+                await execute(
+                    "UPDATE client_referrals SET total_deposits = total_deposits + $1 WHERE referred_client_id = $2",
+                    deposit_amount, client_id
                 )
                 
                 # Calculate and credit referrer earnings (percentage of deposit)
@@ -619,24 +665,22 @@ async def process_referral_on_deposit(db, client_id: str, deposit_amount: float)
                 earnings = deposit_amount * (tier_info['percentage'] / 100)
                 
                 if earnings > 0:
-                    earnings_tx = {
-                        'transaction_id': generate_id(),
-                        'client_id': referrer['client_id'],
-                        'type': 'REFERRAL_EARN',
-                        'amount': earnings,
-                        'wallet_type': 'real',
-                        'status': 'confirmed',
-                        'source': 'referral',
-                        'reason': f"Referral earnings from {client.get('display_name', 'client')} deposit",
-                        'metadata': {
+                    earnings_tx_id = generate_id()
+                    await execute(
+                        """
+                        INSERT INTO ledger_transactions 
+                        (transaction_id, client_id, type, amount, wallet_type, status, source, reason, metadata, created_at, confirmed_at)
+                        VALUES ($1, $2, 'REFERRAL_EARN', $3, 'real', 'confirmed', 'referral', $4, $5, $6, $6)
+                        """,
+                        earnings_tx_id, referrer['client_id'], earnings,
+                        f"Referral earnings from {client.get('display_name', 'client')} deposit",
+                        json.dumps({
                             'referred_client_id': client_id,
                             'deposit_amount': deposit_amount,
                             'percentage': tier_info['percentage']
-                        },
-                        'created_at': get_current_utc_iso(),
-                        'confirmed_at': get_current_utc_iso()
-                    }
-                    await db.ledger_transactions.insert_one(earnings_tx)
+                        }),
+                        get_current_utc()
+                    )
                     result['referrer_earned'] = earnings
     
     return result
