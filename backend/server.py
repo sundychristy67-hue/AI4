@@ -28,9 +28,45 @@ logger = logging.getLogger(__name__)
 
 # Create FastAPI app
 app = FastAPI(
-    title="Portal & Automation API",
-    description="Staffless-first platform API for Messenger → Portal → Telegram ecosystem",
-    version="1.0.0"
+    title="Gaming Platform API",
+    description="""
+## Gaming Platform & Referral Order System API
+
+This API provides two main systems:
+
+### Portal API (Legacy)
+- Client and admin authentication
+- Game management
+- Wallet and transaction management
+- Referral system
+
+### API v1 - Referral-Based Gaming Order System
+A production-ready REST API for managing gaming orders with referral bonuses.
+
+**Base URL**: `/api/v1`
+
+**Key Features**:
+- Magic link + password authentication
+- Referral code validation with perks
+- Order validation and creation with bonus engine
+- HMAC-signed webhook notifications
+
+**Authentication**:
+All endpoints (except signup) require either:
+- `username` + `password` in request body, OR
+- `Authorization: Bearer <token>` header
+
+See individual endpoint documentation for details.
+    """,
+    version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_tags=[
+        {"name": "Authentication", "description": "User signup, login, and token management"},
+        {"name": "Referrals", "description": "Referral code validation and perk lookup"},
+        {"name": "Orders", "description": "Order validation, creation, and management"},
+        {"name": "Webhooks", "description": "Webhook registration and delivery"},
+    ]
 )
 
 # CORS middleware
