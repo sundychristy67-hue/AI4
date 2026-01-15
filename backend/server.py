@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
 from config import settings
 from database import connect_to_db, close_db_connection
 import logging
@@ -14,6 +15,9 @@ from routes.telegram_admin_routes import router as telegram_admin_router
 from routes.settings_routes import router as settings_router
 from routes.public_routes import router as public_router
 from routes.test_routes import router as test_router
+
+# Import API v1
+from api.v1 import api_v1_router, init_api_v1_db, close_api_v1_db
 
 # Configure logging
 logging.basicConfig(
