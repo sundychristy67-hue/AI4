@@ -11,9 +11,9 @@ from auth import (
     get_portal_client, validate_portal_token, get_portal_client_flexible,
     authenticate_client_password, create_client_access_token, hash_password
 )
-from database import get_database
+from database import fetch_one, fetch_all, execute, row_to_dict, rows_to_list
 from utils import (
-    mask_credential, apply_referral_code, get_current_utc_iso, generate_id,
+    mask_credential, apply_referral_code, get_current_utc, get_current_utc_iso, generate_id,
     calculate_wallet_balances, calculate_referral_bonus, calculate_referral_tier
 )
 import logging
@@ -38,52 +38,15 @@ def simple_encrypt(plain: str) -> str:
     return base64.b64encode(plain.encode('utf-8')).decode('utf-8')
 
 def check_visibility(client: dict, feature: str) -> bool:
-    """
-    Check if a feature is visible for the client based on visibility_level.
-    
-    HIDDEN: Only basic info (name, status)
-    SUMMARY: Basic info + balance totals (no transaction details)
-    FULL: Everything visible
-    """
+    """Check if a feature is visible for the client based on visibility_level."""
     level = client.get('visibility_level', 'full')
     
     if level == 'hidden':
-        # Only basic profile info
         return feature in ['profile', 'basic']
     elif level == 'summary':
-        # Profile + balances, but no transaction details or credentials
         return feature in ['profile', 'basic', 'balances', 'summary']
-    else:  # 'full'
+    else:
         return True
-
-def apply_visibility_filter(client: dict, data: dict, feature: str) -> dict:
-    """Apply visibility filtering to response data."""
-    level = client.get('visibility_level', 'full')
-    
-    if level == 'full':
-        return data
-    
-    if level == 'hidden':
-        # Return minimal data
-        return {'message': 'Details are hidden for your account'}
-    
-    if level == 'summary' and feature == 'dashboard':
-        # Return summary without transaction details
-        return {
-            'wallet': {
-                'real_balance': data.get('wallet', {}).get('real_balance', 0),
-                'bonus_balance': data.get('wallet', {}).get('bonus_balance', 0),
-            },
-            'overview': {
-                'lifetime_total_in': data.get('overview', {}).get('lifetime_total_in', 0),
-                'lifetime_total_out': data.get('overview', {}).get('lifetime_total_out', 0),
-            },
-            'recent_transactions': [],  # Hidden in summary mode
-            'referral_summary': data.get('referral_summary', {}),
-            'bonus_info': data.get('bonus_info', {})
-        }
-    
-    return data
 
 # ==================== CLIENT PASSWORD AUTH ====================
 
@@ -98,7 +61,6 @@ async def client_password_login(login_data: ClientPasswordLogin):
             message='Invalid username or password'
         )
     
-    # Create JWT token
     access_token = await create_client_access_token(client['client_id'])
     
     return ClientPasswordLoginResponse(
@@ -115,24 +77,23 @@ async def setup_client_password(
     client: dict = Depends(get_portal_client_flexible)
 ):
     """Set up username/password for the current client (requires existing auth)."""
-    db = await get_database()
-    
     # Check if username is already taken
-    existing = await db.clients.find_one({'username': setup_data.username.lower()}, {'_id': 0})
+    existing = await fetch_one(
+        "SELECT client_id FROM clients WHERE LOWER(username) = LOWER($1)",
+        setup_data.username
+    )
     if existing and existing['client_id'] != client['client_id']:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Username already taken')
     
-    # Hash password and update client
     password_hash = hash_password(setup_data.password)
     
-    await db.clients.update_one(
-        {'client_id': client['client_id']},
-        {'$set': {
-            'username': setup_data.username.lower(),
-            'password_hash': password_hash,
-            'password_auth_enabled': True,
-            'password_set_at': get_current_utc_iso()
-        }}
+    await execute(
+        """
+        UPDATE clients 
+        SET username = $1, password_hash = $2, password_auth_enabled = TRUE, password_set_at = $3
+        WHERE client_id = $4
+        """,
+        setup_data.username.lower(), password_hash, get_current_utc(), client['client_id']
     )
     
     return {
@@ -170,20 +131,18 @@ async def validate_token(token: str):
         }
     }
 
-
 @router.get('/me', response_model=ClientResponse)
 async def get_my_profile(client: dict = Depends(get_portal_client_flexible)):
     """Get current client profile."""
     return ClientResponse(**client)
 
-
 @router.get('/dashboard')
 async def get_dashboard(client: dict = Depends(get_portal_client_flexible)):
     """Get portal dashboard data with wallet balances."""
-    db = await get_database()
-    client_id = client['client_id']
+    from database import get_pool
+    pool = await get_pool()
     
-    # Check visibility
+    client_id = client['client_id']
     visibility = client.get('visibility_level', 'full')
     
     if visibility == 'hidden':
@@ -198,23 +157,41 @@ async def get_dashboard(client: dict = Depends(get_portal_client_flexible)):
         }
     
     # Get wallet balances
-    wallet = await calculate_wallet_balances(db, client_id)
+    wallet = await calculate_wallet_balances(pool, client_id)
     
-    # Recent transactions (hidden in summary mode)
+    # Recent transactions
     recent_txs = []
     if visibility == 'full':
-        recent_txs = await db.ledger_transactions.find(
-            {'client_id': client_id},
-            {'_id': 0}
-        ).sort('created_at', -1).limit(10).to_list(10)
+        rows = await fetch_all(
+            """
+            SELECT * FROM ledger_transactions 
+            WHERE client_id = $1 
+            ORDER BY created_at DESC 
+            LIMIT 10
+            """,
+            client_id
+        )
+        for row in rows_to_list(rows):
+            if row.get('created_at'):
+                row['created_at'] = row['created_at'].isoformat()
+            if row.get('confirmed_at'):
+                row['confirmed_at'] = row['confirmed_at'].isoformat()
+            recent_txs.append(row)
     
     # Referral stats
-    referral_count = await db.client_referrals.count_documents({'referrer_client_id': client_id})
-    valid_referrals = await db.client_referrals.count_documents(
-        {'referrer_client_id': client_id, 'status': 'valid'}
+    referral_count_row = await fetch_one(
+        "SELECT COUNT(*) as count FROM client_referrals WHERE referrer_client_id = $1",
+        client_id
     )
+    referral_count = referral_count_row['count'] if referral_count_row else 0
     
-    # Calculate tier info
+    valid_referrals_row = await fetch_one(
+        "SELECT COUNT(*) as count FROM client_referrals WHERE referrer_client_id = $1 AND status = 'valid'",
+        client_id
+    )
+    valid_referrals = valid_referrals_row['count'] if valid_referrals_row else 0
+    
+    # Calculate tier and bonus info
     tier_info = calculate_referral_tier(valid_referrals)
     bonus_info = calculate_referral_bonus(valid_referrals, client.get('bonus_claims', 0))
     
@@ -255,19 +232,17 @@ async def get_dashboard(client: dict = Depends(get_portal_client_flexible)):
         }
     }
 
-
 @router.get('/wallets', response_model=WalletSummary)
 async def get_wallet_summary(client: dict = Depends(get_portal_client_flexible)):
     """Get detailed wallet summary."""
-    db = await get_database()
+    from database import get_pool
+    pool = await get_pool()
     
-    # Check visibility
     if client.get('visibility_level') == 'hidden':
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Wallet details are hidden for your account')
     
-    wallet = await calculate_wallet_balances(db, client['client_id'])
+    wallet = await calculate_wallet_balances(pool, client['client_id'])
     return WalletSummary(**wallet)
-
 
 @router.get('/transactions', response_model=List[LedgerTransactionResponse])
 async def get_my_transactions(
@@ -277,60 +252,71 @@ async def get_my_transactions(
     client: dict = Depends(get_portal_client_flexible)
 ):
     """Get client's transaction history."""
-    db = await get_database()
-    
-    # Check visibility - transactions require FULL visibility
     visibility = client.get('visibility_level', 'full')
     if visibility != 'full':
-        return []  # Return empty list for restricted visibility
+        return []
     
-    query = {'client_id': client['client_id']}
+    query = "SELECT * FROM ledger_transactions WHERE client_id = $1"
+    params = [client['client_id']]
     
     if type_filter and type_filter in ['IN', 'OUT', 'ADJUST', 'REFERRAL_EARN', 'REAL_LOAD', 'BONUS_EARN', 'BONUS_LOAD']:
-        query['type'] = type_filter
+        query += f" AND type = ${len(params)+1}"
+        params.append(type_filter)
     
     if wallet_type and wallet_type in ['real', 'bonus']:
         if wallet_type == 'real':
-            query['type'] = {'$in': ['IN', 'OUT', 'ADJUST', 'REFERRAL_EARN', 'REAL_LOAD']}
+            query += f" AND type IN ('IN', 'OUT', 'ADJUST', 'REFERRAL_EARN', 'REAL_LOAD')"
         else:
-            query['type'] = {'$in': ['BONUS_EARN', 'BONUS_LOAD', 'BONUS_ADJUST']}
+            query += f" AND type IN ('BONUS_EARN', 'BONUS_LOAD', 'BONUS_ADJUST')"
     
-    transactions = await db.ledger_transactions.find(
-        query,
-        {'_id': 0}
-    ).sort('created_at', -1).to_list(limit)
+    query += f" ORDER BY created_at DESC LIMIT ${len(params)+1}"
+    params.append(limit)
     
-    return [LedgerTransactionResponse(**tx) for tx in transactions]
-
+    transactions = await fetch_all(query, *params)
+    
+    result = []
+    for tx in rows_to_list(transactions):
+        if tx.get('created_at'):
+            tx['created_at'] = tx['created_at'].isoformat()
+        if tx.get('confirmed_at'):
+            tx['confirmed_at'] = tx['confirmed_at'].isoformat()
+        result.append(LedgerTransactionResponse(**tx))
+    
+    return result
 
 @router.get('/credentials', response_model=List[ClientCredentialResponse])
 async def get_my_credentials(client: dict = Depends(get_portal_client_flexible)):
     """Get client's game credentials (masked by default)."""
-    db = await get_database()
-    
-    # Check visibility - credentials require FULL visibility
     visibility = client.get('visibility_level', 'full')
     if visibility != 'full':
-        return []  # Return empty list for restricted visibility
+        return []
     
-    credentials = await db.client_credentials.find(
-        {'client_id': client['client_id']},
-        {'_id': 0}
-    ).to_list(100)
+    credentials = await fetch_all(
+        "SELECT * FROM client_credentials WHERE client_id = $1",
+        client['client_id']
+    )
     
     if not credentials:
         return []
     
+    credentials = rows_to_list(credentials)
+    
     # Get game names
     game_ids = [c['game_id'] for c in credentials]
-    games = await db.games.find({'id': {'$in': game_ids}}, {'_id': 0}).to_list(100)
-    games_map = {g['id']: g for g in games}
+    if game_ids:
+        placeholders = ', '.join([f'${i+1}' for i in range(len(game_ids))])
+        games = await fetch_all(
+            f"SELECT * FROM games WHERE id IN ({placeholders})",
+            *game_ids
+        )
+        games_map = {g['id']: g for g in rows_to_list(games)}
+    else:
+        games_map = {}
     
     result = []
     for cred in credentials:
         game = games_map.get(cred['game_id'], {})
         
-        # Decrypt and mask credentials
         decrypted_user = simple_decrypt(cred.get('game_user_id', ''))
         decrypted_pass = simple_decrypt(cred.get('game_password', ''))
         
@@ -341,6 +327,9 @@ async def get_my_credentials(client: dict = Depends(get_portal_client_flexible))
             masked_user = '[Game Suspended]'
             masked_pass = '[Game Suspended]'
         
+        assigned_at = cred['assigned_at'].isoformat() if cred.get('assigned_at') else get_current_utc_iso()
+        last_accessed = cred['last_accessed_at'].isoformat() if cred.get('last_accessed_at') else None
+        
         result.append(ClientCredentialResponse(
             id=cred['id'],
             client_id=cred['client_id'],
@@ -349,36 +338,35 @@ async def get_my_credentials(client: dict = Depends(get_portal_client_flexible))
             game_user_id=masked_user,
             game_password=masked_pass,
             is_active=cred.get('is_active', False) and game.get('is_active', False),
-            assigned_at=cred['assigned_at'],
-            last_accessed_at=cred.get('last_accessed_at')
+            assigned_at=assigned_at,
+            last_accessed_at=last_accessed
         ))
     
     return result
 
-
 @router.post('/credentials/{game_id}/reveal')
 async def reveal_credential(game_id: str, client: dict = Depends(get_portal_client_flexible)):
     """Reveal full credentials for a game."""
-    db = await get_database()
-    
-    # Check visibility - credentials require FULL visibility
     if client.get('visibility_level', 'full') != 'full':
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Credentials are hidden for your account')
     
-    game = await db.games.find_one({'id': game_id}, {'_id': 0})
+    game = await fetch_one("SELECT * FROM games WHERE id = $1", game_id)
     if not game:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Game not found')
     
+    game = row_to_dict(game)
     if not game.get('is_active', False):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Game is suspended')
     
-    credential = await db.client_credentials.find_one(
-        {'client_id': client['client_id'], 'game_id': game_id},
-        {'_id': 0}
+    credential = await fetch_one(
+        "SELECT * FROM client_credentials WHERE client_id = $1 AND game_id = $2",
+        client['client_id'], game_id
     )
     
     if not credential:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='No credentials for this game')
+    
+    credential = row_to_dict(credential)
     
     decrypted_user = simple_decrypt(credential.get('game_user_id', ''))
     decrypted_pass = simple_decrypt(credential.get('game_password', ''))
@@ -386,9 +374,9 @@ async def reveal_credential(game_id: str, client: dict = Depends(get_portal_clie
     if not decrypted_user or not decrypted_pass:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Credentials not yet assigned')
     
-    await db.client_credentials.update_one(
-        {'id': credential['id']},
-        {'$set': {'last_accessed_at': get_current_utc_iso()}}
+    await execute(
+        "UPDATE client_credentials SET last_accessed_at = $1 WHERE id = $2",
+        get_current_utc(), credential['id']
     )
     
     return {
@@ -397,26 +385,21 @@ async def reveal_credential(game_id: str, client: dict = Depends(get_portal_clie
         'expires_in_seconds': 15
     }
 
-
 # ==================== LOAD TO GAME ====================
 
 @router.get('/games')
 async def get_available_games(client: dict = Depends(get_portal_client_flexible)):
     """Get list of games available for loading."""
-    db = await get_database()
+    games = await fetch_all("SELECT * FROM games WHERE is_active = TRUE")
     
-    # Get active games
-    games = await db.games.find({'is_active': True}, {'_id': 0}).to_list(100)
-    
-    # Get client's credentials
-    credentials = await db.client_credentials.find(
-        {'client_id': client['client_id']},
-        {'_id': 0, 'game_id': 1, 'is_active': 1}
-    ).to_list(100)
-    cred_map = {c['game_id']: c for c in credentials}
+    credentials = await fetch_all(
+        "SELECT game_id, is_active FROM client_credentials WHERE client_id = $1",
+        client['client_id']
+    )
+    cred_map = {c['game_id']: c for c in rows_to_list(credentials)}
     
     result = []
-    for game in games:
+    for game in rows_to_list(games):
         cred = cred_map.get(game['id'])
         result.append({
             'id': game['id'],
@@ -429,41 +412,40 @@ async def get_available_games(client: dict = Depends(get_portal_client_flexible)
     
     return {'games': result}
 
-
 @router.post('/load-to-game', response_model=LoadToGameResponse)
 async def load_to_game(
     request: LoadToGameRequest,
     client: dict = Depends(get_portal_client_flexible)
 ):
     """Submit a load-to-game request."""
-    db = await get_database()
+    from database import get_pool
+    pool = await get_pool()
+    
     client_id = client['client_id']
     
-    # Check if client is allowed to load
     if client.get('load_locked'):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Loading is currently disabled for your account')
     
-    # Check if bonus wallet is locked
     if request.wallet_type == WalletType.BONUS and client.get('bonus_locked'):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Bonus wallet is currently locked')
     
-    # Validate game exists
-    game = await db.games.find_one({'id': request.game_id, 'is_active': True}, {'_id': 0})
+    game = await fetch_one(
+        "SELECT * FROM games WHERE id = $1 AND is_active = TRUE", request.game_id
+    )
     if not game:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Game not found or inactive')
     
-    # Check credentials exist
-    credential = await db.client_credentials.find_one(
-        {'client_id': client_id, 'game_id': request.game_id, 'is_active': True},
-        {'_id': 0}
+    game = row_to_dict(game)
+    
+    credential = await fetch_one(
+        "SELECT * FROM client_credentials WHERE client_id = $1 AND game_id = $2 AND is_active = TRUE",
+        client_id, request.game_id
     )
     if not credential:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='No active credentials for this game')
     
-    # Get wallet balances
-    wallet = await calculate_wallet_balances(db, client_id)
+    wallet = await calculate_wallet_balances(pool, client_id)
     
-    # Check sufficient balance
     if request.wallet_type == WalletType.REAL:
         if wallet['real_balance'] < request.amount:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Insufficient real wallet balance')
@@ -471,40 +453,32 @@ async def load_to_game(
         if wallet['bonus_balance'] < request.amount:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Insufficient bonus wallet balance')
     
-    # Validate amount
     if request.amount <= 0:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Amount must be greater than 0')
     
-    # Create order
     order_id = generate_id()
-    order_doc = {
-        'order_id': order_id,
-        'client_id': client_id,
-        'order_type': 'load',
-        'game': game['name'],
-        'game_id': request.game_id,
-        'amount': request.amount,
-        'wallet_type': request.wallet_type.value,
-        'status': OrderStatus.PENDING_CONFIRMATION.value,
-        'created_at': get_current_utc_iso()
-    }
-    await db.orders.insert_one(order_doc)
+    now = get_current_utc()
     
-    # Create pending transaction
+    await execute(
+        """
+        INSERT INTO orders (order_id, client_id, order_type, game, game_id, amount, wallet_type, status, created_at)
+        VALUES ($1, $2, 'load', $3, $4, $5, $6, $7, $8)
+        """,
+        order_id, client_id, game['name'], request.game_id, request.amount,
+        request.wallet_type.value, OrderStatus.PENDING_CONFIRMATION.value, now
+    )
+    
     tx_type = TransactionType.REAL_LOAD if request.wallet_type == WalletType.REAL else TransactionType.BONUS_LOAD
-    tx_doc = {
-        'transaction_id': generate_id(),
-        'client_id': client_id,
-        'type': tx_type.value,
-        'amount': request.amount,
-        'wallet_type': request.wallet_type.value,
-        'status': TransactionStatus.PENDING.value,
-        'source': 'portal',
-        'order_id': order_id,
-        'reason': f"Load to {game['name']}",
-        'created_at': get_current_utc_iso()
-    }
-    await db.ledger_transactions.insert_one(tx_doc)
+    tx_id = generate_id()
+    
+    await execute(
+        """
+        INSERT INTO ledger_transactions (transaction_id, client_id, type, amount, wallet_type, status, source, order_id, reason, created_at)
+        VALUES ($1, $2, $3, $4, $5, $6, 'portal', $7, $8, $9)
+        """,
+        tx_id, client_id, tx_type.value, request.amount, request.wallet_type.value,
+        TransactionStatus.PENDING.value, order_id, f"Load to {game['name']}", now
+    )
     
     return LoadToGameResponse(
         order_id=order_id,
@@ -517,78 +491,74 @@ async def load_to_game(
         message='Load request submitted. Awaiting confirmation.'
     )
 
-
 @router.get('/load-history')
 async def get_load_history(client: dict = Depends(get_portal_client_flexible)):
     """Get client's load-to-game history."""
-    db = await get_database()
-    
-    # Check visibility
     if client.get('visibility_level', 'full') != 'full':
-        return {'loads': []}  # Return empty for restricted visibility
+        return {'loads': []}
     
-    orders = await db.orders.find(
-        {'client_id': client['client_id'], 'order_type': 'load'},
-        {'_id': 0}
-    ).sort('created_at', -1).to_list(100)
+    orders = await fetch_all(
+        "SELECT * FROM orders WHERE client_id = $1 AND order_type = 'load' ORDER BY created_at DESC LIMIT 100",
+        client['client_id']
+    )
     
-    return {'loads': orders}
-
+    result = []
+    for o in rows_to_list(orders):
+        if o.get('created_at'):
+            o['created_at'] = o['created_at'].isoformat()
+        if o.get('confirmed_at'):
+            o['confirmed_at'] = o['confirmed_at'].isoformat()
+        result.append(o)
+    
+    return {'loads': result}
 
 # ==================== REFERRALS ====================
 
 @router.get('/referrals')
 async def get_my_referrals(client: dict = Depends(get_portal_client_flexible)):
     """Get client's referral information with bonus progress."""
-    db = await get_database()
     client_id = client['client_id']
     
-    # Referral info is available in all visibility modes
-    # but detailed earnings may be hidden
+    referrals = await fetch_all(
+        "SELECT * FROM client_referrals WHERE referrer_client_id = $1 ORDER BY created_at DESC LIMIT 100",
+        client_id
+    )
+    referrals = rows_to_list(referrals)
     
-    referrals = await db.client_referrals.find(
-        {'referrer_client_id': client_id},
-        {'_id': 0}
-    ).sort('created_at', -1).to_list(100)
+    # Total earnings from referrals
+    earnings_row = await fetch_one(
+        """
+        SELECT COALESCE(SUM(amount), 0) as total FROM ledger_transactions 
+        WHERE client_id = $1 AND type = 'REFERRAL_EARN' AND status = 'confirmed'
+        """,
+        client_id
+    )
+    total_earnings = earnings_row['total'] if earnings_row else 0
     
-    # Calculate total earnings from referrals
-    earnings_pipeline = [
-        {'$match': {
-            'client_id': client_id,
-            'type': TransactionType.REFERRAL_EARN.value,
-            'status': TransactionStatus.CONFIRMED.value
-        }},
-        {'$group': {'_id': None, 'total': {'$sum': '$amount'}}}
-    ]
-    
-    earnings_result = await db.ledger_transactions.aggregate(earnings_pipeline).to_list(1)
-    total_earnings = earnings_result[0]['total'] if earnings_result else 0
-    
-    # Calculate bonus earnings
-    bonus_pipeline = [
-        {'$match': {
-            'client_id': client_id,
-            'type': TransactionType.BONUS_EARN.value,
-            'source': 'referral_bonus',
-            'status': TransactionStatus.CONFIRMED.value
-        }},
-        {'$group': {'_id': None, 'total': {'$sum': '$amount'}}}
-    ]
-    
-    bonus_result = await db.ledger_transactions.aggregate(bonus_pipeline).to_list(1)
-    total_bonus = bonus_result[0]['total'] if bonus_result else 0
+    # Bonus earnings
+    bonus_row = await fetch_one(
+        """
+        SELECT COALESCE(SUM(amount), 0) as total FROM ledger_transactions 
+        WHERE client_id = $1 AND type = 'BONUS_EARN' AND source = 'referral_bonus' AND status = 'confirmed'
+        """,
+        client_id
+    )
+    total_bonus = bonus_row['total'] if bonus_row else 0
     
     # Get referred clients info
     referred_ids = [r['referred_client_id'] for r in referrals]
-    referred_clients = await db.clients.find(
-        {'client_id': {'$in': referred_ids}},
-        {'_id': 0, 'client_id': 1, 'display_name': 1, 'created_at': 1}
-    ).to_list(100)
-    clients_map = {c['client_id']: c for c in referred_clients}
+    if referred_ids:
+        placeholders = ', '.join([f'${i+1}' for i in range(len(referred_ids))])
+        referred_clients = await fetch_all(
+            f"SELECT client_id, display_name, created_at FROM clients WHERE client_id IN ({placeholders})",
+            *referred_ids
+        )
+        clients_map = {c['client_id']: c for c in rows_to_list(referred_clients)}
+    else:
+        clients_map = {}
     
     valid_count = sum(1 for r in referrals if r.get('status') == 'valid')
     
-    # Calculate tier and bonus info
     tier_info = calculate_referral_tier(valid_count)
     bonus_info = calculate_referral_bonus(valid_count, client.get('bonus_claims', 0))
     
@@ -600,7 +570,7 @@ async def get_my_referrals(client: dict = Depends(get_portal_client_flexible)):
             'referred_display_name': referred.get('display_name', 'Player'),
             'status': ref.get('status', 'pending'),
             'total_deposits': ref.get('total_deposits', 0),
-            'created_at': ref['created_at']
+            'created_at': ref['created_at'].isoformat() if ref.get('created_at') else get_current_utc_iso()
         })
     
     return {
@@ -625,19 +595,22 @@ async def get_my_referrals(client: dict = Depends(get_portal_client_flexible)):
         'referrals': enriched_referrals
     }
 
-
 @router.post('/referrals/apply', response_model=ApplyReferralResponse)
 async def apply_referral_code_endpoint(
     referral_data: ApplyReferralRequest,
     client: dict = Depends(get_portal_client_flexible)
 ):
     """Apply a referral code from the portal."""
-    db = await get_database()
+    from database import get_pool
+    pool = await get_pool()
     
-    result = await apply_referral_code(db, client['client_id'], referral_data.referral_code)
+    result = await apply_referral_code(pool, client['client_id'], referral_data.referral_code)
     
     if result['success']:
-        updated_client = await db.clients.find_one({'client_id': client['client_id']}, {'_id': 0})
+        updated_client = await fetch_one(
+            "SELECT * FROM clients WHERE client_id = $1", client['client_id']
+        )
+        updated_client = row_to_dict(updated_client) if updated_client else {}
         return ApplyReferralResponse(
             success=True,
             message=result['message'],
@@ -650,56 +623,65 @@ async def apply_referral_code_endpoint(
         message=result['message']
     )
 
-
 # ==================== WITHDRAWALS ====================
 
 @router.get('/withdrawals')
 async def get_my_withdrawals(client: dict = Depends(get_portal_client_flexible)):
     """Get client's withdrawal/redeem history."""
-    db = await get_database()
-    
-    # Check visibility
     if client.get('visibility_level', 'full') != 'full':
-        return {'withdrawals': []}  # Return empty for restricted visibility
+        return {'withdrawals': []}
     
-    orders = await db.orders.find(
-        {'client_id': client['client_id'], 'order_type': 'redeem'},
-        {'_id': 0}
-    ).sort('created_at', -1).to_list(100)
+    orders = await fetch_all(
+        "SELECT * FROM orders WHERE client_id = $1 AND order_type = 'redeem' ORDER BY created_at DESC LIMIT 100",
+        client['client_id']
+    )
     
-    return {'withdrawals': orders}
+    result = []
+    for o in rows_to_list(orders):
+        if o.get('created_at'):
+            o['created_at'] = o['created_at'].isoformat()
+        if o.get('confirmed_at'):
+            o['confirmed_at'] = o['confirmed_at'].isoformat()
+        result.append(o)
+    
+    return {'withdrawals': result}
 
-
-# ==================== BONUS TASKS / CLAIMS ====================
+# ==================== BONUS TASKS ====================
 
 @router.get('/bonus-tasks')
 async def get_bonus_tasks(client: dict = Depends(get_portal_client_flexible)):
     """Get available bonus tasks and progress."""
-    db = await get_database()
+    from database import get_pool
+    pool = await get_pool()
+    
     client_id = client['client_id']
     
-    # Get referral stats
-    valid_referrals = await db.client_referrals.count_documents(
-        {'referrer_client_id': client_id, 'status': 'valid'}
+    valid_referrals_row = await fetch_one(
+        "SELECT COUNT(*) as count FROM client_referrals WHERE referrer_client_id = $1 AND status = 'valid'",
+        client_id
     )
+    valid_referrals = valid_referrals_row['count'] if valid_referrals_row else 0
     
-    # Calculate bonus info
     bonus_info = calculate_referral_bonus(valid_referrals, client.get('bonus_claims', 0))
     
-    # Get bonus history
-    bonus_history = await db.ledger_transactions.find(
-        {
-            'client_id': client_id,
-            'type': TransactionType.BONUS_EARN.value,
-            'source': 'referral_bonus'
-        },
-        {'_id': 0}
-    ).sort('created_at', -1).to_list(20)
+    bonus_history = await fetch_all(
+        """
+        SELECT * FROM ledger_transactions 
+        WHERE client_id = $1 AND type = 'BONUS_EARN' AND source = 'referral_bonus'
+        ORDER BY created_at DESC LIMIT 20
+        """,
+        client_id
+    )
     
-    tasks = []
+    history_list = []
+    for bh in rows_to_list(bonus_history):
+        if bh.get('created_at'):
+            bh['created_at'] = bh['created_at'].isoformat()
+        if bh.get('confirmed_at'):
+            bh['confirmed_at'] = bh['confirmed_at'].isoformat()
+        history_list.append(bh)
     
-    # Referral Milestone Task
-    tasks.append({
+    tasks = [{
         'id': 'referral_milestone',
         'title': 'Referral Milestone Bonus',
         'description': f'Get {bonus_info["next_bonus_at"]} valid referrals to earn ${bonus_info["next_bonus_amount"]:.2f} bonus',
@@ -709,10 +691,12 @@ async def get_bonus_tasks(client: dict = Depends(get_portal_client_flexible)):
         'reward_amount': bonus_info['next_bonus_amount'],
         'status': 'in_progress' if bonus_info['referrals_until_next'] > 0 else 'claimable',
         'remaining': bonus_info['referrals_until_next']
-    })
+    }]
+    
+    wallet = await calculate_wallet_balances(pool, client_id)
     
     return {
         'tasks': tasks,
-        'bonus_history': bonus_history,
-        'wallet_bonus_balance': (await calculate_wallet_balances(db, client_id))['bonus_balance']
+        'bonus_history': history_list,
+        'wallet_bonus_balance': wallet['bonus_balance']
     }
