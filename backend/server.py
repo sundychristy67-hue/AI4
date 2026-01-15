@@ -82,11 +82,13 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup_event():
     await connect_to_db()
+    await init_api_v1_db()  # Initialize API v1 database
     logger.info("Application startup complete")
 
 @app.on_event("shutdown")
 async def shutdown_event():
     await close_db_connection()
+    await close_api_v1_db()  # Close API v1 database
     logger.info("Application shutdown complete")
 
 # Health check endpoint
