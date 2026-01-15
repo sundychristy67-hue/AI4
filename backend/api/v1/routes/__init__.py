@@ -6,6 +6,7 @@ from .auth_routes import router as auth_router
 from .referral_routes import router as referral_router
 from .order_routes import router as order_router
 from .webhook_routes import router as webhook_router
+from .admin_routes import router as admin_router
 
 # Create main v1 router
 api_v1_router = APIRouter(prefix="/api/v1")
@@ -15,5 +16,6 @@ api_v1_router.include_router(auth_router)
 api_v1_router.include_router(referral_router)
 api_v1_router.include_router(order_router)
 api_v1_router.include_router(webhook_router)
+api_v1_router.include_router(admin_router)
 
 __all__ = ["api_v1_router"]
