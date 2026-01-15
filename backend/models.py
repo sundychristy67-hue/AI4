@@ -230,16 +230,17 @@ class OrderResponse(BaseModel):
     model_config = ConfigDict(extra='ignore')
     order_id: str
     client_id: str
-    order_type: OrderType
-    game: str
+    order_type: str  # Using str for flexibility with DB values
+    game: Optional[str] = None
+    game_id: Optional[str] = None
     amount: float
-    wallet_type: WalletType = WalletType.REAL
+    wallet_type: str = 'real'
     original_amount: Optional[float] = None
     username: Optional[str] = None
     password: Optional[str] = None
     payment_method: Optional[str] = None
     payout_tag: Optional[str] = None
-    status: OrderStatus
+    status: str
     created_at: str
     confirmed_at: Optional[str] = None
     confirmed_by: Optional[str] = None
