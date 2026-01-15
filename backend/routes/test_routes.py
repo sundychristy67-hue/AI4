@@ -1,233 +1,82 @@
 """
-Test Routes - AI Test Spot & Payment Simulation Panel
-TEMPORARY IMPLEMENTATION FOR TESTING
-
-These routes provide:
-1. AI Test Spot - Isolated area for testing AI conversations (NOW WITH REAL GPT!)
-2. Payment Simulation - Manual payment verification without Telegram/Chatwoot
+Test Routes - AI Test Spot and Payment Simulation Panel
+PostgreSQL Version
 """
-
 from fastapi import APIRouter, HTTPException, status, Depends
-from typing import List, Optional, Dict, Any
+from typing import Optional, List
 from datetime import datetime, timezone
-from pydantic import BaseModel
-from models import OrderStatus, TransactionStatus, TransactionType, WalletType
+import json
 from auth import get_current_admin
-from database import get_database
-from utils import generate_id, get_current_utc_iso, calculate_wallet_balances, process_referral_on_deposit
+from database import fetch_one, fetch_all, execute, row_to_dict, rows_to_list
+from utils import generate_id, get_current_utc, get_current_utc_iso, generate_referral_code
+from config import settings
 import logging
 import os
-from dotenv import load_dotenv
-
-load_dotenv()
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix='/test', tags=['Test Mode'])
-
-# Initialize GPT Chat
-EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY')
-
-GAMING_SYSTEM_PROMPT = """You are a helpful AI assistant for a gaming platform. You help users with:
-
-1. **Account & Balance Questions**: Explain how to check balances (Real wallet + Bonus wallet)
-2. **Loading Credits**: Guide users to load credits to their favorite games
-3. **Withdrawals**: Explain withdrawal process and minimum requirements ($20 minimum)
-4. **Referral Program**: Explain how referrals work (5-10% commission based on tier)
-5. **Game Information**: Help users find games, download links, and availability
-6. **Technical Support**: Basic troubleshooting for common issues
-
-**Important Rules:**
-- Be friendly and helpful
-- Keep responses concise but informative
-- For sensitive actions (payments, withdrawals), remind users to use the official portal
-- Never share actual credentials or sensitive data
-- If unsure, recommend contacting support via Messenger
-
-**Platform Features:**
-- Games catalog with availability status (Available, Maintenance, Unavailable)
-- Real wallet (withdrawable) and Bonus wallet (non-withdrawable, for games only)
-- Referral program with tiered commissions
-- Secure portal access via magic link or password"""
-
-
-# ==================== MODELS ====================
-
-class PaymentSimulateRequest(BaseModel):
-    """Simulate a payment creation (like from Telegram)"""
-    client_id: str
-    amount: float
-    payment_type: str  # 'cashin' or 'cashout'
-    payment_method: Optional[str] = "GCash"
-    notes: Optional[str] = None
-
-
-class PaymentActionRequest(BaseModel):
-    """Mark payment as received/failed or adjust amount"""
-    order_id: str
-    action: str  # 'received', 'failed', 'adjust'
-    new_amount: Optional[float] = None
-    reason: Optional[str] = None
-
-
-class AITestMessage(BaseModel):
-    """AI Test conversation message"""
-    role: str  # 'user' or 'assistant'
-    content: str
-
-
-class AITestConversation(BaseModel):
-    """AI Test conversation request"""
-    messages: List[AITestMessage]
-    test_scenario: Optional[str] = None  # 'client_query', 'agent_response', 'admin_action'
+router = APIRouter(prefix='/test', tags=['Test'])
 
 
 # ==================== AI TEST SPOT ====================
 
-@router.get('/ai-test/info')
-async def get_ai_test_info(current_user: dict = Depends(get_current_admin)):
-    """Get AI Test Spot information and available scenarios."""
-    return {
-        "test_mode": False,
-        "ai_enabled": True,
-        "model": "GPT-4o (OpenAI)",
-        "warning": "LIVE AI - Real GPT responses. No real payments or automation triggers.",
-        "available_scenarios": [
-            {
-                "id": "client_query",
-                "name": "Client Query Simulation",
-                "description": "Test how AI responds to client questions about the platform"
-            },
-            {
-                "id": "agent_response",
-                "name": "Agent Response Testing",
-                "description": "Test agent responses to various support scenarios"
-            },
-            {
-                "id": "payment_flow",
-                "name": "Payment Flow Testing",
-                "description": "Test payment-related queries and guidance"
-            },
-            {
-                "id": "error_handling",
-                "name": "Error Handling",
-                "description": "Test error responses and edge cases"
-            }
-        ],
-        "sample_prompts": {
-            "client_query": [
-                "How do I load credits to my game?",
-                "What is my current balance?",
-                "How do referrals work?",
-                "I want to withdraw my earnings"
-            ],
-            "agent_response": [
-                "User requesting cash-in of $100",
-                "User reporting incorrect balance",
-                "User asking about failed transaction"
-            ],
-            "payment_flow": [
-                "How do I make a deposit?",
-                "What payment methods do you accept?",
-                "My payment is pending, what should I do?"
-            ],
-            "error_handling": [
-                "I can't login to my account",
-                "The game is not loading",
-                "I didn't receive my bonus"
-            ]
-        }
-    }
-
-
 @router.post('/ai-test/simulate')
-async def simulate_ai_conversation(
-    conversation: AITestConversation,
+async def simulate_ai_response(
+    prompt: str,
+    scenario: str = "general",
     current_user: dict = Depends(get_current_admin)
 ):
     """
-    Chat with real GPT AI for testing purposes.
-    Uses OpenAI GPT-4o via Emergent integrations.
+    Simulate AI response for testing (uses GPT-4o via Emergent LLM Key).
+    This is a TEST environment - not for production use.
     """
-    db = await get_database()
+    from emergentintegrations.llm.chat import chat, LlmModel
     
-    if not EMERGENT_LLM_KEY:
-        raise HTTPException(status_code=500, detail="AI not configured - EMERGENT_LLM_KEY not found")
+    emergent_key = settings.emergent_llm_key
+    if not emergent_key:
+        raise HTTPException(status_code=500, detail='Emergent LLM Key not configured')
     
-    # Generate session ID for this conversation
-    session_id = f"ai_test_{current_user['id']}_{generate_id()[:8]}"
+    # Build context based on scenario
+    system_prompts = {
+        "general": "You are a helpful assistant for a gaming platform. Answer questions about games, accounts, and transactions.",
+        "client_query": "You are a customer service agent for a gaming platform. Help clients with their questions about their account, balance, and referrals.",
+        "agent_response": "You are an AI agent helping to automate responses. Be concise and professional.",
+        "payment_flow": "You are helping to guide a client through a payment process. Be clear about steps and requirements.",
+        "error_handling": "You are helping troubleshoot issues. Ask clarifying questions and suggest solutions."
+    }
+    
+    system_prompt = system_prompts.get(scenario, system_prompts["general"])
     
     try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
-        
-        # Initialize the chat with GPT-4o
-        chat = LlmChat(
-            api_key=EMERGENT_LLM_KEY,
-            session_id=session_id,
-            system_message=GAMING_SYSTEM_PROMPT
-        ).with_model("openai", "gpt-4o")
-        
-        # Get the last user message
-        last_message = conversation.messages[-1].content if conversation.messages else ""
-        
-        # Add context from scenario
-        scenario_context = ""
-        if conversation.test_scenario == "client_query":
-            scenario_context = "[Context: This is a client asking about the gaming platform] "
-        elif conversation.test_scenario == "agent_response":
-            scenario_context = "[Context: You are helping an agent respond to a user scenario] "
-        elif conversation.test_scenario == "payment_flow":
-            scenario_context = "[Context: User has payment-related questions] "
-        elif conversation.test_scenario == "error_handling":
-            scenario_context = "[Context: User is experiencing an issue] "
-        
-        # Send message to GPT
-        user_message = UserMessage(text=scenario_context + last_message)
-        response_text = await chat.send_message(user_message)
+        response = await chat(
+            api_key=emergent_key,
+            prompt=prompt,
+            model=LlmModel.GPT_4O,
+            system_prompt=system_prompt + "\n\n[TEST MODE - This is a test environment for AI behavior testing]"
+        )
         
         # Log the test
-        test_log = {
-            "id": generate_id(),
-            "admin_id": current_user['id'],
-            "scenario": conversation.test_scenario,
-            "messages": [m.dict() for m in conversation.messages],
-            "ai_response": response_text,
-            "timestamp": get_current_utc_iso(),
-            "mode": "LIVE_GPT",
-            "model": "gpt-4o"
-        }
-        await db.ai_test_logs.insert_one(test_log)
+        log_id = generate_id()
+        await execute(
+            """
+            INSERT INTO ai_test_logs (id, admin_id, scenario, messages, created_at)
+            VALUES ($1, $2, $3, $4, $5)
+            """,
+            log_id, current_user['id'], scenario,
+            json.dumps([{"role": "user", "content": prompt}, {"role": "assistant", "content": response}]),
+            get_current_utc()
+        )
         
         return {
-            "test_mode": False,
-            "ai_enabled": True,
-            "response": {
-                "role": "assistant",
-                "content": response_text
-            },
-            "test_id": test_log["id"],
-            "model": "GPT-4o (OpenAI)",
-            "info": "Real AI response from GPT-4o"
+            'response': response,
+            'scenario': scenario,
+            'model': 'gpt-4o',
+            'test_mode': True,
+            'log_id': log_id
         }
         
     except Exception as e:
-        logger.error(f"AI chat error: {str(e)}")
-        
-        # Log the error
-        error_log = {
-            "id": generate_id(),
-            "admin_id": current_user['id'],
-            "scenario": conversation.test_scenario,
-            "messages": [m.dict() for m in conversation.messages],
-            "error": str(e),
-            "timestamp": get_current_utc_iso(),
-            "mode": "ERROR"
-        }
-        await db.ai_test_logs.insert_one(error_log)
-        
-        raise HTTPException(
-            status_code=500, 
-            detail=f"AI error: {str(e)}"
-        )
+        logger.error(f"AI test error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"AI test failed: {str(e)}")
 
 
 @router.get('/ai-test/logs')
@@ -235,415 +84,262 @@ async def get_ai_test_logs(
     limit: int = 50,
     current_user: dict = Depends(get_current_admin)
 ):
-    """Get AI test conversation logs."""
-    db = await get_database()
+    """Get AI test logs."""
+    logs = await fetch_all(
+        "SELECT * FROM ai_test_logs ORDER BY created_at DESC LIMIT $1",
+        limit
+    )
     
-    logs = await db.ai_test_logs.find(
-        {},
-        {"_id": 0}
-    ).sort("timestamp", -1).limit(limit).to_list(limit)
+    result = []
+    for log in rows_to_list(logs):
+        if log.get('created_at'):
+            log['created_at'] = log['created_at'].isoformat()
+        result.append(log)
     
-    return {"logs": logs, "test_mode": True}
+    return {'logs': result}
+
+
+@router.delete('/ai-test/logs')
+async def clear_ai_test_logs(current_user: dict = Depends(get_current_admin)):
+    """Clear all AI test logs."""
+    await execute("DELETE FROM ai_test_logs")
+    return {'message': 'AI test logs cleared'}
 
 
 # ==================== PAYMENT SIMULATION PANEL ====================
 
-@router.post('/payment/simulate')
-async def simulate_payment(
-    request: PaymentSimulateRequest,
+@router.post('/payment/create')
+async def create_test_payment(
+    client_id: str,
+    amount: float,
+    payment_type: str = "cash-in",
     current_user: dict = Depends(get_current_admin)
 ):
     """
-    TEMPORARY: Simulate a payment creation (replaces Telegram bot triggers).
-    Creates a test order that can be manually verified.
+    Create a test payment for simulation.
+    TEMPORARY - This is a mock panel to replace Telegram confirmation temporarily.
     """
-    db = await get_database()
-    
-    # Verify client exists
-    client = await db.clients.find_one({"client_id": request.client_id}, {"_id": 0})
+    client = await fetch_one("SELECT * FROM clients WHERE client_id = $1", client_id)
     if not client:
-        raise HTTPException(status_code=404, detail="Client not found")
+        raise HTTPException(status_code=404, detail='Client not found')
+    
+    client = row_to_dict(client)
     
     order_id = generate_id()
     tx_id = generate_id()
+    now = get_current_utc()
     
     # Determine transaction type
-    if request.payment_type == "cashin":
-        tx_type = TransactionType.IN.value
-        order_type = "create"  # Load/recharge
+    if payment_type == "cash-in":
+        order_type = "create"
+        tx_type = "IN"
+    elif payment_type == "cash-out":
+        order_type = "redeem"
+        tx_type = "OUT"
     else:
-        tx_type = TransactionType.OUT.value
-        order_type = "redeem"  # Withdrawal
+        raise HTTPException(status_code=400, detail='Invalid payment_type. Use cash-in or cash-out')
     
-    # Create test order
-    order_doc = {
-        "order_id": order_id,
-        "client_id": request.client_id,
-        "order_type": order_type,
-        "game": "Test Payment",
-        "amount": request.amount,
-        "wallet_type": WalletType.REAL.value,
-        "payment_method": request.payment_method,
-        "status": OrderStatus.PENDING_CONFIRMATION.value,
-        "created_at": get_current_utc_iso(),
-        "test_mode": True,
-        "notes": request.notes,
-        "created_by": current_user['id']
-    }
-    await db.orders.insert_one(order_doc)
+    # Create order
+    await execute(
+        """
+        INSERT INTO orders (order_id, client_id, order_type, game, amount, status, created_at)
+        VALUES ($1, $2, $3, 'Test Payment', $4, 'pending_confirmation', $5)
+        """,
+        order_id, client_id, order_type, amount, now
+    )
     
     # Create pending transaction
-    tx_doc = {
-        "transaction_id": tx_id,
-        "client_id": request.client_id,
-        "type": tx_type,
-        "amount": request.amount,
-        "wallet_type": WalletType.REAL.value,
-        "status": TransactionStatus.PENDING.value,
-        "source": "test_simulation",
-        "order_id": order_id,
-        "reason": f"Test {request.payment_type} simulation",
-        "created_at": get_current_utc_iso(),
-        "test_mode": True
-    }
-    await db.ledger_transactions.insert_one(tx_doc)
-    
-    # Log the action
-    await db.audit_logs.insert_one({
-        "id": generate_id(),
-        "admin_id": current_user['id'],
-        "action": "test_payment_simulate",
-        "entity_type": "order",
-        "entity_id": order_id,
-        "details": {
-            "client_id": request.client_id,
-            "amount": request.amount,
-            "payment_type": request.payment_type,
-            "test_mode": True
-        },
-        "timestamp": get_current_utc_iso()
-    })
+    await execute(
+        """
+        INSERT INTO ledger_transactions (transaction_id, client_id, type, amount, wallet_type, status, source, order_id, reason, created_at)
+        VALUES ($1, $2, $3, $4, 'real', 'pending', 'test_panel', $5, $6, $7)
+        """,
+        tx_id, client_id, tx_type, amount, order_id, f"Test {payment_type} via panel", now
+    )
     
     return {
-        "success": True,
-        "test_mode": True,
-        "message": f"Test {request.payment_type} created. Use payment panel to mark as received/failed.",
-        "order_id": order_id,
-        "transaction_id": tx_id,
-        "client_name": client.get("display_name", "Unknown"),
-        "amount": request.amount,
-        "status": "pending_confirmation",
-        "warning": "TEMPORARY - This simulates what Telegram bot would create"
+        'order_id': order_id,
+        'transaction_id': tx_id,
+        'client_id': client_id,
+        'client_name': client.get('display_name', 'Unknown'),
+        'amount': amount,
+        'type': payment_type,
+        'status': 'pending_confirmation',
+        'message': 'Test payment created. Use /verify to mark as received.'
     }
+
+
+@router.post('/payment/verify/{order_id}')
+async def verify_test_payment(
+    order_id: str,
+    action: str = "received",
+    adjusted_amount: Optional[float] = None,
+    current_user: dict = Depends(get_current_admin)
+):
+    """
+    Verify a test payment (mark as received, failed, or adjust amount).
+    TEMPORARY - Simulates Telegram confirmation flow.
+    """
+    from utils import process_referral_on_deposit
+    from database import get_pool
+    pool = await get_pool()
+    
+    order = await fetch_one("SELECT * FROM orders WHERE order_id = $1", order_id)
+    if not order:
+        raise HTTPException(status_code=404, detail='Order not found')
+    
+    order = row_to_dict(order)
+    
+    if order['status'] not in ['pending_confirmation', 'pending_payout', 'pending_screenshot']:
+        raise HTTPException(status_code=400, detail='Order already processed')
+    
+    now = get_current_utc()
+    final_amount = adjusted_amount if adjusted_amount is not None else order['amount']
+    
+    if action == "received":
+        # Mark as confirmed
+        await execute(
+            "UPDATE orders SET status = 'confirmed', amount = $1, confirmed_at = $2, confirmed_by = $3 WHERE order_id = $4",
+            final_amount, now, current_user['id'], order_id
+        )
+        await execute(
+            "UPDATE ledger_transactions SET status = 'confirmed', amount = $1, confirmed_at = $2, confirmed_by = $3 WHERE order_id = $4",
+            final_amount, now, current_user['id'], order_id
+        )
+        
+        # Process referral on deposit if it's a cash-in
+        if order['order_type'] == 'create':
+            await process_referral_on_deposit(pool, order['client_id'], final_amount)
+        
+        return {
+            'order_id': order_id,
+            'status': 'confirmed',
+            'amount': final_amount,
+            'message': 'Payment marked as received and confirmed'
+        }
+    
+    elif action == "failed":
+        await execute(
+            "UPDATE orders SET status = 'rejected', rejection_reason = 'Payment failed/not received', confirmed_at = $1, confirmed_by = $2 WHERE order_id = $3",
+            now, current_user['id'], order_id
+        )
+        await execute(
+            "UPDATE ledger_transactions SET status = 'rejected', confirmed_at = $1, confirmed_by = $2 WHERE order_id = $3",
+            now, current_user['id'], order_id
+        )
+        
+        return {
+            'order_id': order_id,
+            'status': 'rejected',
+            'message': 'Payment marked as failed'
+        }
+    
+    else:
+        raise HTTPException(status_code=400, detail='Invalid action. Use: received, failed')
 
 
 @router.get('/payment/pending')
-async def get_pending_payments(
-    test_only: bool = False,
-    current_user: dict = Depends(get_current_admin)
-):
-    """Get all pending payment orders for verification."""
-    db = await get_database()
-    
-    query = {
-        "status": {"$in": [
-            OrderStatus.PENDING_CONFIRMATION.value,
-            OrderStatus.PENDING_SCREENSHOT.value,
-            OrderStatus.PENDING_PAYOUT.value
-        ]}
-    }
-    
-    if test_only:
-        query["test_mode"] = True
-    
-    orders = await db.orders.find(query, {"_id": 0}).sort("created_at", -1).to_list(200)
-    
-    # Enrich with client info
-    client_ids = list(set([o["client_id"] for o in orders]))
-    clients = await db.clients.find(
-        {"client_id": {"$in": client_ids}},
-        {"_id": 0, "client_id": 1, "display_name": 1}
-    ).to_list(200)
-    clients_map = {c["client_id"]: c for c in clients}
-    
-    enriched_orders = []
-    for order in orders:
-        client = clients_map.get(order["client_id"], {})
-        enriched_orders.append({
-            **order,
-            "client_name": client.get("display_name", "Unknown"),
-            "is_test": order.get("test_mode", False)
-        })
-    
-    return {
-        "orders": enriched_orders,
-        "total": len(enriched_orders),
-        "test_mode_indicator": "Orders marked with is_test=true are simulated"
-    }
-
-
-@router.post('/payment/action')
-async def process_payment_action(
-    request: PaymentActionRequest,
-    current_user: dict = Depends(get_current_admin)
-):
-    """
-    TEMPORARY: Process payment action (mark received/failed/adjust).
-    Replaces Telegram inline keyboard functionality.
-    """
-    db = await get_database()
-    
-    # Get order
-    order = await db.orders.find_one({"order_id": request.order_id}, {"_id": 0})
-    if not order:
-        raise HTTPException(status_code=404, detail="Order not found")
-    
-    if order["status"] not in [
-        OrderStatus.PENDING_CONFIRMATION.value,
-        OrderStatus.PENDING_SCREENSHOT.value,
-        OrderStatus.PENDING_PAYOUT.value
-    ]:
-        raise HTTPException(
-            status_code=400, 
-            detail=f"Cannot process order in status: {order['status']}"
-        )
-    
-    now = get_current_utc_iso()
-    
-    if request.action == "received":
-        # Mark as confirmed/received
-        new_status = OrderStatus.CONFIRMED.value
-        tx_status = TransactionStatus.CONFIRMED.value
-        message = "Payment marked as RECEIVED"
-        
-        # Update order
-        await db.orders.update_one(
-            {"order_id": request.order_id},
-            {"$set": {
-                "status": new_status,
-                "confirmed_at": now,
-                "confirmed_by": current_user['id']
-            }}
-        )
-        
-        # Update transaction
-        await db.ledger_transactions.update_one(
-            {"order_id": request.order_id},
-            {"$set": {
-                "status": tx_status,
-                "confirmed_at": now,
-                "confirmed_by": current_user['id']
-            }}
-        )
-        
-        # Process referral for cash-in (deposit)
-        if order.get("order_type") == "create":
-            # Get final amount (may have been adjusted)
-            final_order = await db.orders.find_one({"order_id": request.order_id}, {"_id": 0})
-            amount = final_order.get("amount", order["amount"])
-            await process_referral_on_deposit(db, order["client_id"], amount)
-        
-    elif request.action == "failed":
-        # Mark as rejected/failed
-        new_status = OrderStatus.REJECTED.value
-        tx_status = TransactionStatus.REJECTED.value
-        message = f"Payment marked as FAILED. Reason: {request.reason or 'Not specified'}"
-        
-        await db.orders.update_one(
-            {"order_id": request.order_id},
-            {"$set": {
-                "status": new_status,
-                "rejection_reason": request.reason or "Payment verification failed",
-                "confirmed_at": now,
-                "confirmed_by": current_user['id']
-            }}
-        )
-        
-        await db.ledger_transactions.update_one(
-            {"order_id": request.order_id},
-            {"$set": {
-                "status": tx_status,
-                "confirmed_at": now,
-                "confirmed_by": current_user['id']
-            }}
-        )
-        
-    elif request.action == "adjust":
-        # Adjust amount (for mismatch testing)
-        if request.new_amount is None:
-            raise HTTPException(status_code=400, detail="new_amount required for adjust action")
-        
-        original_amount = order.get("original_amount") or order["amount"]
-        
-        await db.orders.update_one(
-            {"order_id": request.order_id},
-            {"$set": {
-                "amount": request.new_amount,
-                "original_amount": original_amount,
-                "amount_adjusted_by": current_user['id'],
-                "adjustment_reason": request.reason
-            }}
-        )
-        
-        await db.ledger_transactions.update_one(
-            {"order_id": request.order_id},
-            {"$set": {
-                "amount": request.new_amount,
-                "original_amount": original_amount
-            }}
-        )
-        
-        message = f"Amount adjusted from ${original_amount:.2f} to ${request.new_amount:.2f}"
-        
-    else:
-        raise HTTPException(status_code=400, detail=f"Invalid action: {request.action}")
-    
-    # Log action
-    await db.audit_logs.insert_one({
-        "id": generate_id(),
-        "admin_id": current_user['id'],
-        "action": f"test_payment_{request.action}",
-        "entity_type": "order",
-        "entity_id": request.order_id,
-        "details": {
-            "action": request.action,
-            "new_amount": request.new_amount,
-            "reason": request.reason,
-            "test_mode": order.get("test_mode", False)
-        },
-        "timestamp": now
-    })
-    
-    # Get updated wallet balance
-    wallet = await calculate_wallet_balances(db, order["client_id"])
-    
-    return {
-        "success": True,
-        "message": message,
-        "order_id": request.order_id,
-        "action": request.action,
-        "new_wallet_balance": {
-            "real": wallet["real_balance"],
-            "bonus": wallet["bonus_balance"]
-        },
-        "warning": "TEMPORARY - This replaces Telegram confirmation flow"
-    }
-
-
-@router.get('/payment/order/{order_id}')
-async def get_payment_order_detail(
-    order_id: str,
-    current_user: dict = Depends(get_current_admin)
-):
-    """Get detailed information about a payment order."""
-    db = await get_database()
-    
-    order = await db.orders.find_one({"order_id": order_id}, {"_id": 0})
-    if not order:
-        raise HTTPException(status_code=404, detail="Order not found")
-    
-    # Get client info
-    client = await db.clients.find_one(
-        {"client_id": order["client_id"]},
-        {"_id": 0}
+async def get_pending_test_payments(current_user: dict = Depends(get_current_admin)):
+    """Get all pending test payments for the simulation panel."""
+    orders = await fetch_all(
+        """
+        SELECT o.*, c.display_name as client_name 
+        FROM orders o
+        LEFT JOIN clients c ON o.client_id = c.client_id
+        WHERE o.status IN ('pending_confirmation', 'pending_payout', 'pending_screenshot')
+        ORDER BY o.created_at DESC
+        LIMIT 100
+        """
     )
     
-    # Get transaction
-    transaction = await db.ledger_transactions.find_one(
-        {"order_id": order_id},
-        {"_id": 0}
+    result = []
+    for o in rows_to_list(orders):
+        if o.get('created_at'):
+            o['created_at'] = o['created_at'].isoformat()
+        if o.get('confirmed_at'):
+            o['confirmed_at'] = o['confirmed_at'].isoformat()
+        result.append(o)
+    
+    return {'pending_payments': result}
+
+
+@router.get('/payment/stats')
+async def get_test_payment_stats(current_user: dict = Depends(get_current_admin)):
+    """Get test payment statistics."""
+    total_pending = (await fetch_one(
+        "SELECT COUNT(*) as count FROM orders WHERE status IN ('pending_confirmation', 'pending_payout')"
+    ))['count']
+    
+    total_confirmed = (await fetch_one(
+        "SELECT COUNT(*) as count FROM orders WHERE status = 'confirmed'"
+    ))['count']
+    
+    total_rejected = (await fetch_one(
+        "SELECT COUNT(*) as count FROM orders WHERE status = 'rejected'"
+    ))['count']
+    
+    total_in = await fetch_one(
+        "SELECT COALESCE(SUM(amount), 0) as total FROM ledger_transactions WHERE type = 'IN' AND status = 'confirmed'"
     )
     
-    # Get wallet balance
-    wallet = await calculate_wallet_balances(db, order["client_id"])
+    total_out = await fetch_one(
+        "SELECT COALESCE(SUM(amount), 0) as total FROM ledger_transactions WHERE type = 'OUT' AND status = 'confirmed'"
+    )
     
     return {
-        "order": order,
-        "client": client,
-        "transaction": transaction,
-        "wallet": wallet,
-        "is_test": order.get("test_mode", False),
-        "available_actions": ["received", "failed", "adjust"] if order["status"] in [
-            OrderStatus.PENDING_CONFIRMATION.value,
-            OrderStatus.PENDING_SCREENSHOT.value,
-            OrderStatus.PENDING_PAYOUT.value
-        ] else []
+        'pending_count': total_pending,
+        'confirmed_count': total_confirmed,
+        'rejected_count': total_rejected,
+        'total_cash_in': total_in['total'] if total_in else 0,
+        'total_cash_out': total_out['total'] if total_out else 0,
+        'net_flow': (total_in['total'] if total_in else 0) - (total_out['total'] if total_out else 0)
     }
 
 
-# ==================== TEST DATA MANAGEMENT ====================
+# ==================== TEST CLIENT CREATION ====================
 
-@router.post('/data/create-test-client')
+@router.post('/clients/create-test')
 async def create_test_client(
-    display_name: Optional[str] = "Test Client",
+    display_name: str = "Test Player",
+    with_balance: float = 0,
     current_user: dict = Depends(get_current_admin)
 ):
-    """Create a test client for testing purposes."""
-    db = await get_database()
-    
-    from utils import generate_referral_code
-    
+    """
+    Create a test client for simulation purposes.
+    TEMPORARY - For testing the payment panel without real clients.
+    """
     client_id = generate_id()
     referral_code = generate_referral_code()
     
-    client_doc = {
-        "client_id": client_id,
-        "chatwoot_contact_id": f"test_{client_id[:8]}",
-        "messenger_psid": None,
-        "display_name": display_name,
-        "status": "active",
-        "withdraw_locked": False,
-        "load_locked": False,
-        "bonus_locked": False,
-        "referral_code": referral_code,
-        "referred_by_code": None,
-        "referral_locked": False,
-        "referral_count": 0,
-        "valid_referral_count": 0,
-        "bonus_claims": 0,
-        "visibility_level": "full",
-        "created_at": get_current_utc_iso(),
-        "last_active_at": get_current_utc_iso(),
-        "test_mode": True
-    }
+    # Ensure unique referral code
+    while await fetch_one("SELECT client_id FROM clients WHERE referral_code = $1", referral_code):
+        referral_code = generate_referral_code()
     
-    await db.clients.insert_one(client_doc)
+    now = get_current_utc()
     
-    # Remove _id before returning
-    client_doc.pop('_id', None)
+    await execute(
+        """
+        INSERT INTO clients (client_id, display_name, referral_code, status, created_at)
+        VALUES ($1, $2, $3, 'active', $4)
+        """,
+        client_id, display_name, referral_code, now
+    )
     
-    return {
-        "success": True,
-        "client": client_doc,
-        "message": "Test client created successfully",
-        "test_mode": True
-    }
-
-
-@router.get('/data/stats')
-async def get_test_stats(current_user: dict = Depends(get_current_admin)):
-    """Get test mode statistics."""
-    db = await get_database()
-    
-    test_clients = await db.clients.count_documents({"test_mode": True})
-    test_orders = await db.orders.count_documents({"test_mode": True})
-    test_ai_logs = await db.ai_test_logs.count_documents({})
-    
-    pending_orders = await db.orders.count_documents({
-        "status": {"$in": [
-            OrderStatus.PENDING_CONFIRMATION.value,
-            OrderStatus.PENDING_SCREENSHOT.value,
-            OrderStatus.PENDING_PAYOUT.value
-        ]}
-    })
+    # Add initial balance if specified
+    if with_balance > 0:
+        tx_id = generate_id()
+        await execute(
+            """
+            INSERT INTO ledger_transactions (transaction_id, client_id, type, amount, wallet_type, status, source, reason, created_at, confirmed_at)
+            VALUES ($1, $2, 'IN', $3, 'real', 'confirmed', 'test_panel', 'Initial test balance', $4, $4)
+            """,
+            tx_id, client_id, with_balance, now
+        )
     
     return {
-        "test_mode": True,
-        "stats": {
-            "test_clients": test_clients,
-            "test_orders": test_orders,
-            "ai_test_conversations": test_ai_logs,
-            "pending_payments": pending_orders
-        },
-        "note": "TEMPORARY - Test mode statistics for development"
+        'client_id': client_id,
+        'display_name': display_name,
+        'referral_code': referral_code,
+        'initial_balance': with_balance,
+        'message': 'Test client created successfully'
     }
