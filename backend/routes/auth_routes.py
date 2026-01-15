@@ -3,8 +3,8 @@ from typing import Optional
 from datetime import datetime, timezone
 from models import UserCreate, UserLogin, UserResponse, TokenResponse, UserRole
 from auth import hash_password, verify_password, create_access_token, create_refresh_token, get_current_user
-from database import get_database
-from utils import generate_id, generate_referral_code, get_current_utc_iso
+from database import fetch_one, execute, row_to_dict
+from utils import generate_id, generate_referral_code, get_current_utc
 import logging
 
 logger = logging.getLogger(__name__)
@@ -13,33 +13,34 @@ router = APIRouter(prefix='/auth', tags=['Auth'])
 @router.post('/register', response_model=TokenResponse)
 async def register(user_data: UserCreate):
     """Register a new user (for admin dashboard)."""
-    db = await get_database()
-    
     # Check if email exists
-    existing = await db.users.find_one({'email': user_data.email.lower()})
+    existing = await fetch_one(
+        "SELECT id FROM users WHERE LOWER(email) = LOWER($1)", user_data.email
+    )
     if existing:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Email already registered')
     
-    # Generate referral code
+    # Generate unique referral code
     referral_code = generate_referral_code()
-    while await db.users.find_one({'referral_code': referral_code}):
+    while await fetch_one("SELECT id FROM users WHERE referral_code = $1", referral_code):
         referral_code = generate_referral_code()
     
     user_id = generate_id()
-    user_doc = {
-        'id': user_id,
-        'email': user_data.email.lower(),
-        'username': user_data.username,
-        'password_hash': hash_password(user_data.password),
-        'referral_code': referral_code,
-        'referred_by': user_data.referral_code.upper() if user_data.referral_code else None,
-        'role': UserRole.USER.value,
-        'is_active': True,
-        'is_verified': False,
-        'created_at': datetime.now(timezone.utc)
-    }
     
-    await db.users.insert_one(user_doc)
+    await execute(
+        """
+        INSERT INTO users (id, email, username, password_hash, referral_code, referred_by, role, is_active, is_verified, created_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE, FALSE, $8)
+        """,
+        user_id,
+        user_data.email.lower(),
+        user_data.username,
+        hash_password(user_data.password),
+        referral_code,
+        user_data.referral_code.upper() if user_data.referral_code else None,
+        UserRole.USER.value,
+        get_current_utc()
+    )
     
     # Create tokens
     access_token = create_access_token(data={'sub': user_id})
@@ -47,14 +48,14 @@ async def register(user_data: UserCreate):
     
     user_response = UserResponse(
         id=user_id,
-        email=user_doc['email'],
-        username=user_doc['username'],
+        email=user_data.email.lower(),
+        username=user_data.username,
         referral_code=referral_code,
-        referred_by=user_doc['referred_by'],
+        referred_by=user_data.referral_code.upper() if user_data.referral_code else None,
         role=UserRole.USER,
         is_active=True,
         is_verified=False,
-        created_at=user_doc['created_at']
+        created_at=datetime.now(timezone.utc)
     )
     
     return TokenResponse(
@@ -67,11 +68,13 @@ async def register(user_data: UserCreate):
 @router.post('/login', response_model=TokenResponse)
 async def login(credentials: UserLogin):
     """Login a user."""
-    db = await get_database()
-    
-    user = await db.users.find_one({'email': credentials.email.lower()})
+    user = await fetch_one(
+        "SELECT * FROM users WHERE LOWER(email) = LOWER($1)", credentials.email
+    )
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid credentials')
+    
+    user = row_to_dict(user)
     
     if not verify_password(credentials.password, user['password_hash']):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid credentials')

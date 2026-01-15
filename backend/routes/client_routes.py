@@ -1,207 +1,176 @@
-from fastapi import APIRouter, HTTPException, status, Depends
+from fastapi import APIRouter, HTTPException, status, Depends, Header
 from typing import List, Optional
+from datetime import datetime, timedelta, timezone
 from models import (
-    ClientCreate, ClientUpdate, ClientResponse, ClientStatus, VisibilityLevel,
-    PortalSessionCreate, PortalSessionResponse, PortalValidateResponse,
-    ApplyReferralRequest, ApplyReferralResponse
+    ClientCreate, ClientResponse, ClientStatus, PortalSessionCreate, 
+    PortalSessionResponse, PortalValidateResponse
 )
-from auth import get_current_admin, verify_internal_api_key, create_portal_session, validate_portal_token, revoke_client_sessions
-from database import get_database
-from utils import generate_id, generate_referral_code, get_current_utc_iso, apply_referral_code
+from database import fetch_one, fetch_all, execute, row_to_dict, rows_to_list
+from utils import generate_id, generate_referral_code, get_current_utc, get_current_utc_iso
+from config import settings
 import logging
+import secrets
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix='/clients', tags=['Clients'])
 
-# ==================== INTERNAL API (for middleware) ====================
 
-@router.post('/upsert', response_model=ClientResponse)
-async def upsert_client(
-    client_data: ClientCreate,
-    _: bool = Depends(verify_internal_api_key)
-):
-    """Upsert a client by chatwoot_contact_id."""
-    db = await get_database()
+async def verify_internal_api(x_internal_api_key: str = Header(None)):
+    """Verify internal API key for system-to-system calls."""
+    if x_internal_api_key != settings.internal_api_secret:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid internal API key')
+    return True
+
+
+@router.post('/create', response_model=ClientResponse)
+async def create_client(client_data: ClientCreate, _: bool = Depends(verify_internal_api)):
+    """Create a new client (internal API - called by Chatwoot webhook)."""
     
-    # Check if client exists by chatwoot_contact_id
-    existing = None
+    # Check if client already exists
     if client_data.chatwoot_contact_id:
-        existing = await db.clients.find_one(
-            {'chatwoot_contact_id': client_data.chatwoot_contact_id},
-            {'_id': 0}
+        existing = await fetch_one(
+            "SELECT client_id FROM clients WHERE chatwoot_contact_id = $1",
+            client_data.chatwoot_contact_id
         )
+        if existing:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Client with this Chatwoot ID already exists')
     
-    if existing:
-        await db.clients.update_one(
-            {'chatwoot_contact_id': client_data.chatwoot_contact_id},
-            {'$set': {'last_active_at': get_current_utc_iso()}}
-        )
-        existing['last_active_at'] = get_current_utc_iso()
-        return ClientResponse(**existing)
-    
-    # Create new client
-    client_id = generate_id()
+    # Generate unique referral code
     referral_code = generate_referral_code()
-    
-    while await db.clients.find_one({'referral_code': referral_code}):
+    while await fetch_one("SELECT client_id FROM clients WHERE referral_code = $1", referral_code):
         referral_code = generate_referral_code()
     
-    client_doc = {
-        'client_id': client_id,
-        'chatwoot_contact_id': client_data.chatwoot_contact_id,
-        'messenger_psid': client_data.messenger_psid,
-        'display_name': client_data.display_name or f'Player_{client_id[:8]}',
-        'status': ClientStatus.ACTIVE.value,
-        'withdraw_locked': False,
-        'load_locked': False,
-        'bonus_locked': False,
-        'referral_code': referral_code,
-        'referred_by_code': None,
-        'referral_locked': False,
-        'referral_count': 0,
-        'valid_referral_count': 0,
-        'bonus_claims': 0,
-        'created_at': get_current_utc_iso(),
-        'last_active_at': get_current_utc_iso()
-    }
+    client_id = generate_id()
+    now = get_current_utc()
     
-    await db.clients.insert_one(client_doc)
-    logger.info(f"Created new client: {client_id}")
+    await execute(
+        """
+        INSERT INTO clients (client_id, chatwoot_contact_id, messenger_psid, display_name, referral_code, created_at)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        """,
+        client_id,
+        client_data.chatwoot_contact_id,
+        client_data.messenger_psid,
+        client_data.display_name or 'Player',
+        referral_code,
+        now
+    )
     
-    return ClientResponse(**client_doc)
-
-
-@router.post('/portal-session', response_model=PortalSessionResponse)
-async def create_portal_session_endpoint(
-    session_data: PortalSessionCreate,
-    _: bool = Depends(verify_internal_api_key)
-):
-    """Create a portal magic link session for a client."""
-    db = await get_database()
+    # Fetch the created client
+    client = await fetch_one("SELECT * FROM clients WHERE client_id = $1", client_id)
+    client = row_to_dict(client)
+    client['created_at'] = client['created_at'].isoformat() if client.get('created_at') else now.isoformat()
+    if client.get('last_active_at'):
+        client['last_active_at'] = client['last_active_at'].isoformat()
     
-    client = None
-    if session_data.client_id:
-        client = await db.clients.find_one({'client_id': session_data.client_id}, {'_id': 0})
-    elif session_data.chatwoot_contact_id:
-        client = await db.clients.find_one({'chatwoot_contact_id': session_data.chatwoot_contact_id}, {'_id': 0})
-    
-    if not client:
-        # Create client first
-        client_id = generate_id()
-        referral_code = generate_referral_code()
-        
-        client = {
-            'client_id': client_id,
-            'chatwoot_contact_id': session_data.chatwoot_contact_id,
-            'messenger_psid': None,
-            'display_name': f'Player_{client_id[:8]}',
-            'status': ClientStatus.ACTIVE.value,
-            'withdraw_locked': False,
-            'load_locked': False,
-            'bonus_locked': False,
-            'referral_code': referral_code,
-            'referred_by_code': None,
-            'referral_locked': False,
-            'referral_count': 0,
-            'valid_referral_count': 0,
-            'bonus_claims': 0,
-            'created_at': get_current_utc_iso(),
-            'last_active_at': get_current_utc_iso()
-        }
-        await db.clients.insert_one(client)
-    
-    if client.get('status') == 'banned':
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Client account is banned')
-    
-    session = await create_portal_session(client['client_id'])
-    return PortalSessionResponse(**session)
-
-
-@router.get('/all', response_model=List[ClientResponse])
-async def get_all_clients(current_user: dict = Depends(get_current_admin)):
-    """Get all clients (admin only)"""
-    db = await get_database()
-    clients = await db.clients.find({}, {'_id': 0}).sort('created_at', -1).to_list(1000)
-    return [ClientResponse(**c) for c in clients]
-
-
-@router.get('/{client_id}', response_model=ClientResponse)
-async def get_client(client_id: str, current_user: dict = Depends(get_current_admin)):
-    """Get a specific client (admin only)"""
-    db = await get_database()
-    client = await db.clients.find_one({'client_id': client_id}, {'_id': 0})
-    if not client:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Client not found')
     return ClientResponse(**client)
 
 
-@router.put('/{client_id}', response_model=ClientResponse)
-async def update_client(
-    client_id: str,
-    update_data: ClientUpdate,
-    current_user: dict = Depends(get_current_admin)
+@router.post('/portal-session', response_model=PortalSessionResponse)
+async def create_portal_session(session_data: PortalSessionCreate, _: bool = Depends(verify_internal_api)):
+    """Create a portal session (magic link) for a client."""
+    
+    # Find the client
+    if session_data.client_id:
+        client = await fetch_one(
+            "SELECT * FROM clients WHERE client_id = $1", session_data.client_id
+        )
+    elif session_data.chatwoot_contact_id:
+        client = await fetch_one(
+            "SELECT * FROM clients WHERE chatwoot_contact_id = $1", session_data.chatwoot_contact_id
+        )
+    else:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='client_id or chatwoot_contact_id required')
+    
+    if not client:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Client not found')
+    
+    client = row_to_dict(client)
+    
+    # Check client status
+    if client.get('status') == 'banned':
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Client is banned')
+    
+    # Generate unique token
+    token = secrets.token_urlsafe(32)
+    
+    # Calculate expiration
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=settings.portal_token_expire_hours)
+    
+    # Create session
+    await execute(
+        """
+        INSERT INTO portal_sessions (token, client_id, expires_at, is_active, created_at)
+        VALUES ($1, $2, $3, TRUE, $4)
+        """,
+        token, client['client_id'], expires_at, get_current_utc()
+    )
+    
+    portal_url = f"{settings.portal_base_url}/p/{token}"
+    
+    return PortalSessionResponse(
+        token=token,
+        portal_url=portal_url,
+        expires_at=expires_at.isoformat(),
+        client_id=client['client_id']
+    )
+
+
+@router.get('/{client_id}', response_model=ClientResponse)
+async def get_client(client_id: str, _: bool = Depends(verify_internal_api)):
+    """Get client by ID."""
+    client = await fetch_one("SELECT * FROM clients WHERE client_id = $1", client_id)
+    if not client:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Client not found')
+    
+    client = row_to_dict(client)
+    client['created_at'] = client['created_at'].isoformat() if client.get('created_at') else get_current_utc_iso()
+    if client.get('last_active_at'):
+        client['last_active_at'] = client['last_active_at'].isoformat()
+    
+    return ClientResponse(**client)
+
+
+@router.get('/by-chatwoot/{chatwoot_contact_id}', response_model=ClientResponse)
+async def get_client_by_chatwoot(chatwoot_contact_id: str, _: bool = Depends(verify_internal_api)):
+    """Get client by Chatwoot contact ID."""
+    client = await fetch_one(
+        "SELECT * FROM clients WHERE chatwoot_contact_id = $1", chatwoot_contact_id
+    )
+    if not client:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Client not found')
+    
+    client = row_to_dict(client)
+    client['created_at'] = client['created_at'].isoformat() if client.get('created_at') else get_current_utc_iso()
+    if client.get('last_active_at'):
+        client['last_active_at'] = client['last_active_at'].isoformat()
+    
+    return ClientResponse(**client)
+
+
+@router.get('/', response_model=List[ClientResponse])
+async def list_clients(
+    status: Optional[str] = None,
+    limit: int = 100,
+    _: bool = Depends(verify_internal_api)
 ):
-    """Update client details (admin only)"""
-    db = await get_database()
+    """List all clients."""
+    if status:
+        clients = await fetch_all(
+            "SELECT * FROM clients WHERE status = $1 ORDER BY created_at DESC LIMIT $2",
+            status, limit
+        )
+    else:
+        clients = await fetch_all(
+            "SELECT * FROM clients ORDER BY created_at DESC LIMIT $1",
+            limit
+        )
     
-    client = await db.clients.find_one({'client_id': client_id}, {'_id': 0})
-    if not client:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Client not found')
+    result = []
+    for c in rows_to_list(clients):
+        c['created_at'] = c['created_at'].isoformat() if c.get('created_at') else get_current_utc_iso()
+        if c.get('last_active_at'):
+            c['last_active_at'] = c['last_active_at'].isoformat()
+        result.append(ClientResponse(**c))
     
-    update_fields = {}
-    if update_data.display_name is not None:
-        update_fields['display_name'] = update_data.display_name
-    if update_data.status is not None:
-        update_fields['status'] = update_data.status.value
-    if update_data.withdraw_locked is not None:
-        update_fields['withdraw_locked'] = update_data.withdraw_locked
-    if update_data.load_locked is not None:
-        update_fields['load_locked'] = update_data.load_locked
-    if update_data.bonus_locked is not None:
-        update_fields['bonus_locked'] = update_data.bonus_locked
-    if update_data.visibility_level is not None:
-        update_fields['visibility_level'] = update_data.visibility_level.value
-    
-    if update_fields:
-        await db.clients.update_one({'client_id': client_id}, {'$set': update_fields})
-        
-        # Log visibility change
-        if update_data.visibility_level is not None:
-            await db.audit_logs.insert_one({
-                'admin_id': current_user['id'],
-                'action': 'client_visibility_change',
-                'entity_type': 'client',
-                'entity_id': client_id,
-                'details': {
-                    'old_visibility': client.get('visibility_level', 'full'),
-                    'new_visibility': update_data.visibility_level.value
-                },
-                'timestamp': get_current_utc_iso()
-            })
-    
-    updated_client = await db.clients.find_one({'client_id': client_id}, {'_id': 0})
-    return ClientResponse(**updated_client)
-
-
-@router.post('/{client_id}/revoke-sessions')
-async def revoke_all_sessions(client_id: str, current_user: dict = Depends(get_current_admin)):
-    """Revoke all portal sessions for a client (admin only)"""
-    db = await get_database()
-    client = await db.clients.find_one({'client_id': client_id}, {'_id': 0})
-    if not client:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Client not found')
-    
-    await revoke_client_sessions(client_id)
-    return {'message': 'All portal sessions revoked'}
-
-
-@router.post('/{client_id}/resend-portal-link', response_model=PortalSessionResponse)
-async def resend_portal_link(client_id: str, current_user: dict = Depends(get_current_admin)):
-    """Generate a new portal link for a client (admin only)"""
-    db = await get_database()
-    client = await db.clients.find_one({'client_id': client_id}, {'_id': 0})
-    if not client:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Client not found')
-    
-    session = await create_portal_session(client_id)
-    return PortalSessionResponse(**session)
+    return result
