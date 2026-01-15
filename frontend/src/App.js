@@ -123,6 +123,10 @@ function App() {
             
             {/* Default redirect to public games (no login required) */}
             <Route path="/" element={<Navigate to="/games" replace />} />
+            
+            {/* API v1 Admin - Standalone page */}
+            <Route path="/admin/perks" element={<AdminPerksPage />} />
+            
             <Route path="*" element={<Navigate to="/games" replace />} />
           </Routes>
         </div>
