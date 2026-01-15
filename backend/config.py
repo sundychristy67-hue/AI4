@@ -39,7 +39,12 @@ class Settings(BaseSettings):
     # AI / LLM Integration
     emergent_llm_key: str = os.environ.get('EMERGENT_LLM_KEY', '')
     
+    # Telegram Bot
+    telegram_bot_token: str = os.environ.get('TELEGRAM_BOT_TOKEN', '')
+    telegram_admin_chat_id: str = os.environ.get('TELEGRAM_ADMIN_CHAT_ID', '')
+    
     class Config:
         env_file = '.env'
+        extra = 'ignore'
 
 settings = Settings()
