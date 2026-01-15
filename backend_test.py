@@ -4,7 +4,7 @@ from datetime import datetime
 import json
 
 class Phase6Tester:
-    def __init__(self, base_url="https://master-deploy.preview.emergentagent.com"):
+    def __init__(self, base_url="https://gamecentral-21.preview.emergentagent.com"):
         self.base_url = base_url
         self.api = f"{base_url}/api"
         self.admin_token = None
