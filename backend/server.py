@@ -107,6 +107,9 @@ app.include_router(settings_router, prefix="/api")
 app.include_router(public_router, prefix="/api")
 app.include_router(test_router, prefix="/api/admin")
 
+# Include API v1 router
+app.include_router(api_v1_router)
+
 # Root endpoint
 @app.get("/")
 async def root():
