@@ -234,3 +234,9 @@ async def test_bot_connection() -> Dict[str, Any]:
         }
     except TelegramError as e:
         return {"success": False, "error": str(e)}
+
+
+# Alias for send_message used by routes
+async def send_telegram_message(chat_id: str, text: str, parse_mode: str = ParseMode.HTML) -> bool:
+    """Send a message to a specific chat ID."""
+    return await send_message(chat_id, text, parse_mode=parse_mode)
