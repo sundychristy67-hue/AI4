@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, status, Depends
 from typing import List, Optional
 from datetime import datetime, timezone
+import json
 from models import (
     AdminDashboardStats, ClientResponse, ClientUpdate, ClientStatus,
     OrderResponse, OrderStatus, GameResponse, GameCreate, GameUpdate,
@@ -8,8 +9,8 @@ from models import (
     AdminOrderEdit, TransactionType, TransactionStatus, WalletType
 )
 from auth import get_current_admin
-from database import get_database
-from utils import generate_id, get_current_utc_iso, calculate_wallet_balances, process_referral_on_deposit
+from database import fetch_one, fetch_all, execute, row_to_dict, rows_to_list
+from utils import generate_id, get_current_utc, get_current_utc_iso, calculate_wallet_balances, process_referral_on_deposit
 import logging
 import base64
 
@@ -21,74 +22,49 @@ def simple_encrypt(plain: str) -> str:
         return ''
     return base64.b64encode(plain.encode('utf-8')).decode('utf-8')
 
-async def log_admin_action(db, admin_id: str, action: str, entity_type: str, entity_id: str, details: dict):
+async def log_admin_action(admin_id: str, action: str, entity_type: str, entity_id: str, details: dict):
     """Log admin actions for audit."""
-    log_doc = {
-        'id': generate_id(),
-        'admin_id': admin_id,
-        'action': action,
-        'entity_type': entity_type,
-        'entity_id': entity_id,
-        'details': details,
-        'timestamp': get_current_utc_iso()
-    }
-    await db.audit_logs.insert_one(log_doc)
-
+    log_id = generate_id()
+    await execute(
+        """
+        INSERT INTO audit_logs (id, admin_id, action, entity_type, entity_id, details, timestamp)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        """,
+        log_id, admin_id, action, entity_type, entity_id, json.dumps(details), get_current_utc()
+    )
 
 @router.get('/dashboard-stats', response_model=AdminDashboardStats)
 async def get_dashboard_stats(current_user: dict = Depends(get_current_admin)):
     """Get admin dashboard statistics."""
-    db = await get_database()
+    total_users = (await fetch_one("SELECT COUNT(*) as count FROM users"))['count']
+    active_users = (await fetch_one("SELECT COUNT(*) as count FROM users WHERE is_active = TRUE"))['count']
+    total_clients = (await fetch_one("SELECT COUNT(*) as count FROM clients"))['count']
+    active_clients = (await fetch_one("SELECT COUNT(*) as count FROM clients WHERE status = 'active'"))['count']
+    total_games = (await fetch_one("SELECT COUNT(*) as count FROM games"))['count']
     
-    # Count stats
-    total_users = await db.users.count_documents({})
-    active_users = await db.users.count_documents({'is_active': True})
-    total_clients = await db.clients.count_documents({})
-    active_clients = await db.clients.count_documents({'status': 'active'})
-    total_games = await db.games.count_documents({})
+    pending_orders = (await fetch_one(
+        "SELECT COUNT(*) as count FROM orders WHERE status IN ('pending_confirmation', 'pending_payout', 'pending_screenshot')"
+    ))['count']
     
-    pending_orders = await db.orders.count_documents(
-        {'status': {'$in': ['pending_confirmation', 'pending_payout', 'pending_screenshot']}}
-    )
+    pending_withdrawals = (await fetch_one(
+        "SELECT COUNT(*) as count FROM orders WHERE order_type = 'redeem' AND status IN ('pending_confirmation', 'pending_payout')"
+    ))['count']
     
-    pending_withdrawals = await db.orders.count_documents(
-        {'order_type': 'redeem', 'status': {'$in': ['pending_confirmation', 'pending_payout']}}
-    )
+    pending_loads = (await fetch_one(
+        "SELECT COUNT(*) as count FROM orders WHERE order_type = 'load' AND status = 'pending_confirmation'"
+    ))['count']
     
-    pending_loads = await db.orders.count_documents(
-        {'order_type': 'load', 'status': 'pending_confirmation'}
-    )
+    ledger_in = await fetch_one("SELECT COALESCE(SUM(amount), 0) as total FROM ledger_transactions WHERE type = 'IN' AND status = 'confirmed'")
+    total_ledger_in = ledger_in['total'] if ledger_in else 0
     
-    # Calculate ledger totals
-    ledger_in_pipeline = [
-        {'$match': {'type': 'IN', 'status': 'confirmed'}},
-        {'$group': {'_id': None, 'total': {'$sum': '$amount'}}}
-    ]
-    ledger_in_result = await db.ledger_transactions.aggregate(ledger_in_pipeline).to_list(1)
-    total_ledger_in = ledger_in_result[0]['total'] if ledger_in_result else 0
+    ledger_out = await fetch_one("SELECT COALESCE(SUM(amount), 0) as total FROM ledger_transactions WHERE type = 'OUT' AND status = 'confirmed'")
+    total_ledger_out = ledger_out['total'] if ledger_out else 0
     
-    ledger_out_pipeline = [
-        {'$match': {'type': 'OUT', 'status': 'confirmed'}},
-        {'$group': {'_id': None, 'total': {'$sum': '$amount'}}}
-    ]
-    ledger_out_result = await db.ledger_transactions.aggregate(ledger_out_pipeline).to_list(1)
-    total_ledger_out = ledger_out_result[0]['total'] if ledger_out_result else 0
+    referral_earn = await fetch_one("SELECT COALESCE(SUM(amount), 0) as total FROM ledger_transactions WHERE type = 'REFERRAL_EARN' AND status = 'confirmed'")
+    total_earnings = referral_earn['total'] if referral_earn else 0
     
-    # Referral earnings
-    referral_pipeline = [
-        {'$match': {'type': 'REFERRAL_EARN', 'status': 'confirmed'}},
-        {'$group': {'_id': None, 'total': {'$sum': '$amount'}}}
-    ]
-    referral_result = await db.ledger_transactions.aggregate(referral_pipeline).to_list(1)
-    total_earnings = referral_result[0]['total'] if referral_result else 0
-    
-    # Bonus distributed
-    bonus_pipeline = [
-        {'$match': {'type': 'BONUS_EARN', 'status': 'confirmed'}},
-        {'$group': {'_id': None, 'total': {'$sum': '$amount'}}}
-    ]
-    bonus_result = await db.ledger_transactions.aggregate(bonus_pipeline).to_list(1)
-    total_bonus = bonus_result[0]['total'] if bonus_result else 0
+    bonus_earn = await fetch_one("SELECT COALESCE(SUM(amount), 0) as total FROM ledger_transactions WHERE type = 'BONUS_EARN' AND status = 'confirmed'")
+    total_bonus = bonus_earn['total'] if bonus_earn else 0
     
     return AdminDashboardStats(
         total_users=total_users,
@@ -106,17 +82,14 @@ async def get_dashboard_stats(current_user: dict = Depends(get_current_admin)):
         total_ledger_out=total_ledger_out
     )
 
-
 @router.get('/attention-required')
 async def get_attention_items(current_user: dict = Depends(get_current_admin)):
     """Get items requiring admin attention."""
-    db = await get_database()
     items = []
     
-    # Pending orders
-    pending_orders = await db.orders.count_documents(
-        {'status': {'$in': ['pending_confirmation', 'pending_payout']}}
-    )
+    pending_orders = (await fetch_one(
+        "SELECT COUNT(*) as count FROM orders WHERE status IN ('pending_confirmation', 'pending_payout')"
+    ))['count']
     if pending_orders > 0:
         items.append({
             'id': 'pending-orders',
@@ -126,10 +99,9 @@ async def get_attention_items(current_user: dict = Depends(get_current_admin)):
             'action_url': '/admin/orders'
         })
     
-    # Pending loads
-    pending_loads = await db.orders.count_documents(
-        {'order_type': 'load', 'status': 'pending_confirmation'}
-    )
+    pending_loads = (await fetch_one(
+        "SELECT COUNT(*) as count FROM orders WHERE order_type = 'load' AND status = 'pending_confirmation'"
+    ))['count']
     if pending_loads > 0:
         items.append({
             'id': 'pending-loads',
@@ -139,8 +111,9 @@ async def get_attention_items(current_user: dict = Depends(get_current_admin)):
             'action_url': '/admin/orders?filter=load'
         })
     
-    # Suspected fraud referrals
-    suspected_referrals = await db.client_referrals.count_documents({'status': 'suspected'})
+    suspected_referrals = (await fetch_one(
+        "SELECT COUNT(*) as count FROM client_referrals WHERE status = 'suspected'"
+    ))['count']
     if suspected_referrals > 0:
         items.append({
             'id': 'suspected-fraud',
@@ -150,10 +123,9 @@ async def get_attention_items(current_user: dict = Depends(get_current_admin)):
             'action_url': '/admin/referrals'
         })
     
-    # Credentials not set
-    empty_creds = await db.client_credentials.count_documents(
-        {'$or': [{'game_user_id': ''}, {'game_password': ''}]}
-    )
+    empty_creds = (await fetch_one(
+        "SELECT COUNT(*) as count FROM client_credentials WHERE game_user_id = '' OR game_password = ''"
+    ))['count']
     if empty_creds > 0:
         items.append({
             'id': 'empty-credentials',
@@ -165,66 +137,91 @@ async def get_attention_items(current_user: dict = Depends(get_current_admin)):
     
     return {'items': items}
 
-
 @router.get('/clients', response_model=List[ClientResponse])
-async def get_clients(
-    status_filter: Optional[str] = None,
-    current_user: dict = Depends(get_current_admin)
-):
+async def get_clients(status_filter: Optional[str] = None, current_user: dict = Depends(get_current_admin)):
     """Get all clients."""
-    db = await get_database()
-    
-    query = {}
     if status_filter:
-        query['status'] = status_filter
+        clients = await fetch_all(
+            "SELECT * FROM clients WHERE status = $1 ORDER BY created_at DESC LIMIT 1000",
+            status_filter
+        )
+    else:
+        clients = await fetch_all("SELECT * FROM clients ORDER BY created_at DESC LIMIT 1000")
     
-    clients = await db.clients.find(query, {'_id': 0}).sort('created_at', -1).to_list(1000)
-    return [ClientResponse(**c) for c in clients]
-
+    result = []
+    for c in rows_to_list(clients):
+        c['created_at'] = c['created_at'].isoformat() if c.get('created_at') else get_current_utc_iso()
+        if c.get('last_active_at'):
+            c['last_active_at'] = c['last_active_at'].isoformat()
+        result.append(ClientResponse(**c))
+    return result
 
 @router.get('/clients/{client_id}')
 async def get_client_detail(client_id: str, current_user: dict = Depends(get_current_admin)):
     """Get detailed client information with wallet balances."""
-    db = await get_database()
+    from database import get_pool
+    pool = await get_pool()
     
-    client = await db.clients.find_one({'client_id': client_id}, {'_id': 0})
+    client = await fetch_one("SELECT * FROM clients WHERE client_id = $1", client_id)
     if not client:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Client not found')
     
-    # Get wallet balances
-    wallet = await calculate_wallet_balances(db, client_id)
+    client = row_to_dict(client)
+    if client.get('created_at'):
+        client['created_at'] = client['created_at'].isoformat()
+    if client.get('last_active_at'):
+        client['last_active_at'] = client['last_active_at'].isoformat()
     
-    # Get credentials
-    credentials = await db.client_credentials.find(
-        {'client_id': client_id},
-        {'_id': 0}
-    ).to_list(100)
+    wallet = await calculate_wallet_balances(pool, client_id)
     
-    # Get game names
+    credentials = await fetch_all("SELECT * FROM client_credentials WHERE client_id = $1", client_id)
+    credentials = rows_to_list(credentials)
+    
     game_ids = [c['game_id'] for c in credentials]
-    games = await db.games.find({'id': {'$in': game_ids}}, {'_id': 0}).to_list(100)
-    games_map = {g['id']: g for g in games}
+    if game_ids:
+        placeholders = ', '.join([f'${i+1}' for i in range(len(game_ids))])
+        games = await fetch_all(f"SELECT * FROM games WHERE id IN ({placeholders})", *game_ids)
+        games_map = {g['id']: g for g in rows_to_list(games)}
+    else:
+        games_map = {}
     
     for cred in credentials:
         cred['game_name'] = games_map.get(cred['game_id'], {}).get('name', 'Unknown')
+        if cred.get('assigned_at'):
+            cred['assigned_at'] = cred['assigned_at'].isoformat()
+        if cred.get('last_accessed_at'):
+            cred['last_accessed_at'] = cred['last_accessed_at'].isoformat()
     
-    # Recent transactions
-    transactions = await db.ledger_transactions.find(
-        {'client_id': client_id},
-        {'_id': 0}
-    ).sort('created_at', -1).limit(20).to_list(20)
+    transactions = await fetch_all(
+        "SELECT * FROM ledger_transactions WHERE client_id = $1 ORDER BY created_at DESC LIMIT 20",
+        client_id
+    )
+    transactions = rows_to_list(transactions)
+    for tx in transactions:
+        if tx.get('created_at'):
+            tx['created_at'] = tx['created_at'].isoformat()
+        if tx.get('confirmed_at'):
+            tx['confirmed_at'] = tx['confirmed_at'].isoformat()
     
-    # Recent orders
-    orders = await db.orders.find(
-        {'client_id': client_id},
-        {'_id': 0}
-    ).sort('created_at', -1).limit(20).to_list(20)
+    orders = await fetch_all(
+        "SELECT * FROM orders WHERE client_id = $1 ORDER BY created_at DESC LIMIT 20",
+        client_id
+    )
+    orders = rows_to_list(orders)
+    for o in orders:
+        if o.get('created_at'):
+            o['created_at'] = o['created_at'].isoformat()
+        if o.get('confirmed_at'):
+            o['confirmed_at'] = o['confirmed_at'].isoformat()
     
-    # Referral info
-    referrals = await db.client_referrals.find(
-        {'referrer_client_id': client_id},
-        {'_id': 0}
-    ).to_list(100)
+    referrals = await fetch_all(
+        "SELECT * FROM client_referrals WHERE referrer_client_id = $1",
+        client_id
+    )
+    referrals = rows_to_list(referrals)
+    for r in referrals:
+        if r.get('created_at'):
+            r['created_at'] = r['created_at'].isoformat()
     
     return {
         'client': client,
@@ -244,244 +241,209 @@ async def get_client_detail(client_id: str, current_user: dict = Depends(get_cur
         'referrals': referrals
     }
 
-
 @router.put('/clients/{client_id}', response_model=ClientResponse)
-async def update_client(
-    client_id: str,
-    update_data: ClientUpdate,
-    current_user: dict = Depends(get_current_admin)
-):
+async def update_client(client_id: str, update_data: ClientUpdate, current_user: dict = Depends(get_current_admin)):
     """Update client."""
-    db = await get_database()
-    
-    client = await db.clients.find_one({'client_id': client_id}, {'_id': 0})
+    client = await fetch_one("SELECT * FROM clients WHERE client_id = $1", client_id)
     if not client:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Client not found')
     
-    update_fields = {}
+    updates = []
+    params = []
+    param_idx = 1
+    
     if update_data.display_name is not None:
-        update_fields['display_name'] = update_data.display_name
+        updates.append(f"display_name = ${param_idx}")
+        params.append(update_data.display_name)
+        param_idx += 1
     if update_data.status is not None:
-        update_fields['status'] = update_data.status.value
+        updates.append(f"status = ${param_idx}")
+        params.append(update_data.status.value)
+        param_idx += 1
     if update_data.withdraw_locked is not None:
-        update_fields['withdraw_locked'] = update_data.withdraw_locked
+        updates.append(f"withdraw_locked = ${param_idx}")
+        params.append(update_data.withdraw_locked)
+        param_idx += 1
     if update_data.load_locked is not None:
-        update_fields['load_locked'] = update_data.load_locked
+        updates.append(f"load_locked = ${param_idx}")
+        params.append(update_data.load_locked)
+        param_idx += 1
     if update_data.bonus_locked is not None:
-        update_fields['bonus_locked'] = update_data.bonus_locked
+        updates.append(f"bonus_locked = ${param_idx}")
+        params.append(update_data.bonus_locked)
+        param_idx += 1
+    if update_data.visibility_level is not None:
+        updates.append(f"visibility_level = ${param_idx}")
+        params.append(update_data.visibility_level.value)
+        param_idx += 1
     
-    if update_fields:
-        await db.clients.update_one({'client_id': client_id}, {'$set': update_fields})
-        await log_admin_action(db, current_user['id'], 'client_update', 'client', client_id, update_fields)
+    if updates:
+        params.append(client_id)
+        await execute(
+            f"UPDATE clients SET {', '.join(updates)} WHERE client_id = ${param_idx}",
+            *params
+        )
+        await log_admin_action(current_user['id'], 'client_update', 'client', client_id, update_data.dict(exclude_none=True))
     
-    updated_client = await db.clients.find_one({'client_id': client_id}, {'_id': 0})
-    return ClientResponse(**updated_client)
-
+    updated = await fetch_one("SELECT * FROM clients WHERE client_id = $1", client_id)
+    updated = row_to_dict(updated)
+    updated['created_at'] = updated['created_at'].isoformat() if updated.get('created_at') else get_current_utc_iso()
+    if updated.get('last_active_at'):
+        updated['last_active_at'] = updated['last_active_at'].isoformat()
+    return ClientResponse(**updated)
 
 @router.post('/clients/{client_id}/adjust-wallet')
-async def adjust_client_wallet(
-    client_id: str,
-    adjustment: AdminWalletAdjustment,
-    current_user: dict = Depends(get_current_admin)
-):
-    """Adjust client's wallet balance (creates ADJUST or BONUS_ADJUST transaction)."""
-    db = await get_database()
+async def adjust_client_wallet(client_id: str, adjustment: AdminWalletAdjustment, current_user: dict = Depends(get_current_admin)):
+    """Adjust client's wallet balance."""
+    from database import get_pool
+    pool = await get_pool()
     
-    client = await db.clients.find_one({'client_id': client_id}, {'_id': 0})
+    client = await fetch_one("SELECT * FROM clients WHERE client_id = $1", client_id)
     if not client:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Client not found')
     
     tx_type = TransactionType.ADJUST if adjustment.wallet_type == WalletType.REAL else TransactionType.BONUS_ADJUST
+    tx_id = generate_id()
+    now = get_current_utc()
     
-    tx_doc = {
-        'transaction_id': generate_id(),
-        'client_id': client_id,
-        'type': tx_type.value,
-        'amount': adjustment.amount,
-        'wallet_type': adjustment.wallet_type.value,
-        'status': TransactionStatus.CONFIRMED.value,
-        'source': 'admin_adjust',
-        'reason': adjustment.reason,
-        'metadata': {'adjusted_by': current_user['id']},
-        'created_at': get_current_utc_iso(),
-        'confirmed_at': get_current_utc_iso(),
-        'confirmed_by': current_user['id']
-    }
+    await execute(
+        """
+        INSERT INTO ledger_transactions (transaction_id, client_id, type, amount, wallet_type, status, source, reason, metadata, created_at, confirmed_at, confirmed_by)
+        VALUES ($1, $2, $3, $4, $5, 'confirmed', 'admin_adjust', $6, $7, $8, $8, $9)
+        """,
+        tx_id, client_id, tx_type.value, adjustment.amount, adjustment.wallet_type.value,
+        adjustment.reason, json.dumps({'adjusted_by': current_user['id']}), now, current_user['id']
+    )
     
-    await db.ledger_transactions.insert_one(tx_doc)
-    await log_admin_action(db, current_user['id'], 'wallet_adjust', 'client', client_id, {
+    await log_admin_action(current_user['id'], 'wallet_adjust', 'client', client_id, {
         'wallet_type': adjustment.wallet_type.value,
         'amount': adjustment.amount,
         'reason': adjustment.reason
     })
     
-    # Get updated balances
-    wallet = await calculate_wallet_balances(db, client_id)
+    wallet = await calculate_wallet_balances(pool, client_id)
     
-    return {
-        'message': 'Wallet adjusted successfully',
-        'transaction_id': tx_doc['transaction_id'],
-        'new_balances': wallet
-    }
-
-
-@router.put('/clients/{client_id}/referral-count')
-async def update_referral_count(
-    client_id: str,
-    valid_referral_count: int,
-    current_user: dict = Depends(get_current_admin)
-):
-    """Manually update client's valid referral count."""
-    db = await get_database()
-    
-    client = await db.clients.find_one({'client_id': client_id}, {'_id': 0})
-    if not client:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Client not found')
-    
-    await db.clients.update_one(
-        {'client_id': client_id},
-        {'$set': {'valid_referral_count': valid_referral_count}}
-    )
-    
-    await log_admin_action(db, current_user['id'], 'referral_count_update', 'client', client_id, {
-        'old_count': client.get('valid_referral_count', 0),
-        'new_count': valid_referral_count
-    })
-    
-    return {'message': 'Referral count updated', 'valid_referral_count': valid_referral_count}
-
+    return {'message': 'Wallet adjusted successfully', 'transaction_id': tx_id, 'new_balances': wallet}
 
 @router.post('/clients/{client_id}/credentials')
-async def set_client_credentials(
-    client_id: str,
-    cred_data: ClientCredentialAssign,
-    current_user: dict = Depends(get_current_admin)
-):
+async def set_client_credentials(client_id: str, cred_data: ClientCredentialAssign, current_user: dict = Depends(get_current_admin)):
     """Assign or update game credentials for a client."""
-    db = await get_database()
-    
-    client = await db.clients.find_one({'client_id': client_id}, {'_id': 0})
+    client = await fetch_one("SELECT * FROM clients WHERE client_id = $1", client_id)
     if not client:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Client not found')
     
-    game = await db.games.find_one({'id': cred_data.game_id}, {'_id': 0})
+    game = await fetch_one("SELECT * FROM games WHERE id = $1", cred_data.game_id)
     if not game:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Game not found')
     
-    # Check for existing credential
-    existing = await db.client_credentials.find_one(
-        {'client_id': client_id, 'game_id': cred_data.game_id}
+    existing = await fetch_one(
+        "SELECT * FROM client_credentials WHERE client_id = $1 AND game_id = $2",
+        client_id, cred_data.game_id
     )
     
     encrypted_user = simple_encrypt(cred_data.game_user_id)
     encrypted_pass = simple_encrypt(cred_data.game_password)
     
     if existing:
-        await db.client_credentials.update_one(
-            {'client_id': client_id, 'game_id': cred_data.game_id},
-            {'$set': {
-                'game_user_id': encrypted_user,
-                'game_password': encrypted_pass,
-                'is_active': True
-            }}
+        await execute(
+            "UPDATE client_credentials SET game_user_id = $1, game_password = $2, is_active = TRUE WHERE client_id = $3 AND game_id = $4",
+            encrypted_user, encrypted_pass, client_id, cred_data.game_id
         )
     else:
-        cred_doc = {
-            'id': generate_id(),
-            'client_id': client_id,
-            'game_id': cred_data.game_id,
-            'game_user_id': encrypted_user,
-            'game_password': encrypted_pass,
-            'is_active': True,
-            'assigned_at': get_current_utc_iso(),
-            'last_accessed_at': None
-        }
-        await db.client_credentials.insert_one(cred_doc)
+        cred_id = generate_id()
+        await execute(
+            """
+            INSERT INTO client_credentials (id, client_id, game_id, game_user_id, game_password, is_active, assigned_at)
+            VALUES ($1, $2, $3, $4, $5, TRUE, $6)
+            """,
+            cred_id, client_id, cred_data.game_id, encrypted_user, encrypted_pass, get_current_utc()
+        )
     
-    await log_admin_action(db, current_user['id'], 'credential_assign', 'client_credential', client_id, {'game_id': cred_data.game_id})
-    
+    await log_admin_action(current_user['id'], 'credential_assign', 'client_credential', client_id, {'game_id': cred_data.game_id})
     return {'message': 'Credentials assigned successfully'}
-
 
 # ==================== ORDERS MANAGEMENT ====================
 
 @router.get('/orders', response_model=List[OrderResponse])
-async def get_orders(
-    status_filter: Optional[str] = None,
-    type_filter: Optional[str] = None,
-    current_user: dict = Depends(get_current_admin)
-):
+async def get_orders(status_filter: Optional[str] = None, type_filter: Optional[str] = None, current_user: dict = Depends(get_current_admin)):
     """Get all orders."""
-    db = await get_database()
+    query = "SELECT * FROM orders WHERE 1=1"
+    params = []
     
-    query = {}
     if status_filter:
-        query['status'] = status_filter
+        params.append(status_filter)
+        query += f" AND status = ${len(params)}"
     if type_filter:
-        query['order_type'] = type_filter
+        params.append(type_filter)
+        query += f" AND order_type = ${len(params)}"
     
-    orders = await db.orders.find(query, {'_id': 0}).sort('created_at', -1).to_list(1000)
-    return [OrderResponse(**o) for o in orders]
-
+    query += " ORDER BY created_at DESC LIMIT 1000"
+    
+    orders = await fetch_all(query, *params) if params else await fetch_all(query)
+    
+    result = []
+    for o in rows_to_list(orders):
+        o['created_at'] = o['created_at'].isoformat() if o.get('created_at') else get_current_utc_iso()
+        if o.get('confirmed_at'):
+            o['confirmed_at'] = o['confirmed_at'].isoformat()
+        result.append(OrderResponse(**o))
+    return result
 
 @router.get('/orders/{order_id}')
 async def get_order_detail(order_id: str, current_user: dict = Depends(get_current_admin)):
     """Get order details."""
-    db = await get_database()
-    
-    order = await db.orders.find_one({'order_id': order_id}, {'_id': 0})
+    order = await fetch_one("SELECT * FROM orders WHERE order_id = $1", order_id)
     if not order:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Order not found')
     
-    # Get related transaction
-    transaction = await db.ledger_transactions.find_one({'order_id': order_id}, {'_id': 0})
+    order = row_to_dict(order)
+    if order.get('created_at'):
+        order['created_at'] = order['created_at'].isoformat()
+    if order.get('confirmed_at'):
+        order['confirmed_at'] = order['confirmed_at'].isoformat()
     
-    # Get client info
-    client = await db.clients.find_one({'client_id': order['client_id']}, {'_id': 0})
+    transaction = await fetch_one("SELECT * FROM ledger_transactions WHERE order_id = $1", order_id)
+    if transaction:
+        transaction = row_to_dict(transaction)
+        if transaction.get('created_at'):
+            transaction['created_at'] = transaction['created_at'].isoformat()
+        if transaction.get('confirmed_at'):
+            transaction['confirmed_at'] = transaction['confirmed_at'].isoformat()
     
-    return {
-        'order': order,
-        'transaction': transaction,
-        'client': client
-    }
-
+    client = await fetch_one("SELECT * FROM clients WHERE client_id = $1", order['client_id'])
+    if client:
+        client = row_to_dict(client)
+        if client.get('created_at'):
+            client['created_at'] = client['created_at'].isoformat()
+        if client.get('last_active_at'):
+            client['last_active_at'] = client['last_active_at'].isoformat()
+    
+    return {'order': order, 'transaction': transaction, 'client': client}
 
 @router.put('/orders/{order_id}/edit')
-async def edit_order_amount(
-    order_id: str,
-    edit_data: AdminOrderEdit,
-    current_user: dict = Depends(get_current_admin)
-):
+async def edit_order_amount(order_id: str, edit_data: AdminOrderEdit, current_user: dict = Depends(get_current_admin)):
     """Edit order amount before confirmation."""
-    db = await get_database()
-    
-    order = await db.orders.find_one({'order_id': order_id}, {'_id': 0})
+    order = await fetch_one("SELECT * FROM orders WHERE order_id = $1", order_id)
     if not order:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Order not found')
     
+    order = row_to_dict(order)
     if order['status'] not in ['pending_confirmation', 'pending_payout', 'pending_screenshot']:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Order cannot be edited in current status')
     
     original_amount = order.get('original_amount') or order['amount']
     
-    await db.orders.update_one(
-        {'order_id': order_id},
-        {'$set': {
-            'amount': edit_data.new_amount,
-            'original_amount': original_amount
-        }}
+    await execute(
+        "UPDATE orders SET amount = $1, original_amount = $2 WHERE order_id = $3",
+        edit_data.new_amount, original_amount, order_id
     )
     
-    # Update related transaction
-    await db.ledger_transactions.update_one(
-        {'order_id': order_id},
-        {'$set': {
-            'amount': edit_data.new_amount,
-            'original_amount': original_amount
-        }}
+    await execute(
+        "UPDATE ledger_transactions SET amount = $1, original_amount = $2 WHERE order_id = $3",
+        edit_data.new_amount, original_amount, order_id
     )
     
-    await log_admin_action(db, current_user['id'], 'order_edit', 'order', order_id, {
+    await log_admin_action(current_user['id'], 'order_edit', 'order', order_id, {
         'original_amount': original_amount,
         'new_amount': edit_data.new_amount,
         'reason': edit_data.reason
@@ -489,314 +451,237 @@ async def edit_order_amount(
     
     return {'message': 'Order amount updated', 'new_amount': edit_data.new_amount}
 
-
 @router.post('/orders/{order_id}/confirm')
 async def confirm_order(order_id: str, current_user: dict = Depends(get_current_admin)):
     """Confirm an order and its related transaction."""
-    db = await get_database()
+    from database import get_pool
+    pool = await get_pool()
     
-    order = await db.orders.find_one({'order_id': order_id}, {'_id': 0})
+    order = await fetch_one("SELECT * FROM orders WHERE order_id = $1", order_id)
     if not order:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Order not found')
     
+    order = row_to_dict(order)
     if order['status'] not in ['pending_confirmation', 'pending_payout', 'pending_screenshot']:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Order cannot be confirmed in current status')
     
-    now = get_current_utc_iso()
+    now = get_current_utc()
     
-    # Update order
-    await db.orders.update_one(
-        {'order_id': order_id},
-        {'$set': {
-            'status': OrderStatus.CONFIRMED.value,
-            'confirmed_at': now,
-            'confirmed_by': current_user['id']
-        }}
+    await execute(
+        "UPDATE orders SET status = $1, confirmed_at = $2, confirmed_by = $3 WHERE order_id = $4",
+        OrderStatus.CONFIRMED.value, now, current_user['id'], order_id
     )
     
-    # Update related transaction
-    await db.ledger_transactions.update_one(
-        {'order_id': order_id},
-        {'$set': {
-            'status': TransactionStatus.CONFIRMED.value,
-            'confirmed_at': now,
-            'confirmed_by': current_user['id']
-        }}
+    await execute(
+        "UPDATE ledger_transactions SET status = $1, confirmed_at = $2, confirmed_by = $3 WHERE order_id = $4",
+        TransactionStatus.CONFIRMED.value, now, current_user['id'], order_id
     )
     
-    # Process referral on deposit confirmation
     if order['order_type'] == 'load' and order.get('type') == 'IN':
-        await process_referral_on_deposit(db, order['client_id'], order['amount'])
+        await process_referral_on_deposit(pool, order['client_id'], order['amount'])
     
-    await log_admin_action(db, current_user['id'], 'order_confirm', 'order', order_id, {'amount': order['amount']})
-    
+    await log_admin_action(current_user['id'], 'order_confirm', 'order', order_id, {'amount': order['amount']})
     return {'message': 'Order confirmed successfully'}
 
-
 @router.post('/orders/{order_id}/reject')
-async def reject_order(
-    order_id: str,
-    reason: str = "Rejected by admin",
-    current_user: dict = Depends(get_current_admin)
-):
+async def reject_order(order_id: str, reason: str = "Rejected by admin", current_user: dict = Depends(get_current_admin)):
     """Reject an order."""
-    db = await get_database()
-    
-    order = await db.orders.find_one({'order_id': order_id}, {'_id': 0})
+    order = await fetch_one("SELECT * FROM orders WHERE order_id = $1", order_id)
     if not order:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Order not found')
     
+    order = row_to_dict(order)
     if order['status'] not in ['pending_confirmation', 'pending_payout', 'pending_screenshot']:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Order cannot be rejected in current status')
     
-    now = get_current_utc_iso()
+    now = get_current_utc()
     
-    await db.orders.update_one(
-        {'order_id': order_id},
-        {'$set': {
-            'status': OrderStatus.REJECTED.value,
-            'rejection_reason': reason,
-            'confirmed_at': now,
-            'confirmed_by': current_user['id']
-        }}
+    await execute(
+        "UPDATE orders SET status = $1, rejection_reason = $2, confirmed_at = $3, confirmed_by = $4 WHERE order_id = $5",
+        OrderStatus.REJECTED.value, reason, now, current_user['id'], order_id
     )
     
-    await db.ledger_transactions.update_one(
-        {'order_id': order_id},
-        {'$set': {
-            'status': TransactionStatus.REJECTED.value,
-            'confirmed_at': now,
-            'confirmed_by': current_user['id']
-        }}
+    await execute(
+        "UPDATE ledger_transactions SET status = $1, confirmed_at = $2, confirmed_by = $3 WHERE order_id = $4",
+        TransactionStatus.REJECTED.value, now, current_user['id'], order_id
     )
     
-    await log_admin_action(db, current_user['id'], 'order_reject', 'order', order_id, {'reason': reason})
-    
+    await log_admin_action(current_user['id'], 'order_reject', 'order', order_id, {'reason': reason})
     return {'message': 'Order rejected'}
-
 
 # ==================== GAMES MANAGEMENT ====================
 
 @router.get('/games', response_model=List[GameResponse])
 async def get_games(current_user: dict = Depends(get_current_admin)):
     """Get all games."""
-    db = await get_database()
-    games = await db.games.find({}, {'_id': 0}).sort([('display_order', 1), ('created_at', -1)]).to_list(100)
-    return [GameResponse(**g) for g in games]
-
+    games = await fetch_all("SELECT * FROM games ORDER BY display_order ASC, created_at DESC")
+    
+    result = []
+    for g in rows_to_list(games):
+        g['created_at'] = g['created_at'] if g.get('created_at') else datetime.now(timezone.utc)
+        result.append(GameResponse(**g))
+    return result
 
 @router.post('/games', response_model=GameResponse)
 async def create_game(game_data: GameCreate, current_user: dict = Depends(get_current_admin)):
     """Create a new game."""
-    db = await get_database()
-    
-    # Get max display order
-    max_order_game = await db.games.find_one({}, {'display_order': 1}, sort=[('display_order', -1)])
-    next_order = (max_order_game.get('display_order', 0) if max_order_game else 0) + 1
+    max_order = await fetch_one("SELECT COALESCE(MAX(display_order), 0) as max_order FROM games")
+    next_order = (max_order['max_order'] or 0) + 1
     
     game_id = generate_id()
-    game_doc = {
-        'id': game_id,
-        'name': game_data.name,
-        'description': game_data.description,
-        'tagline': game_data.tagline,
-        'thumbnail': game_data.thumbnail,
-        'icon_url': game_data.icon_url,
-        'category': game_data.category,
-        'download_url': game_data.download_url,
-        'platforms': [p.value for p in game_data.platforms],
-        'availability_status': game_data.availability_status.value,
-        'show_credentials': game_data.show_credentials,
-        'allow_recharge': game_data.allow_recharge,
-        'is_featured': game_data.is_featured,
-        'display_order': next_order,
-        'is_active': True,
-        'created_by': current_user['id'],
-        'created_at': datetime.now(timezone.utc)
-    }
+    now = datetime.now(timezone.utc)
     
-    await db.games.insert_one(game_doc)
-    await log_admin_action(db, current_user['id'], 'game_create', 'game', game_id, {'name': game_data.name})
+    await execute(
+        """
+        INSERT INTO games (id, name, description, tagline, thumbnail, icon_url, category, download_url, platforms, 
+                          availability_status, show_credentials, allow_recharge, is_featured, display_order, is_active, created_by, created_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, TRUE, $15, $16)
+        """,
+        game_id, game_data.name, game_data.description, game_data.tagline, game_data.thumbnail,
+        game_data.icon_url, game_data.category, game_data.download_url,
+        [p.value for p in game_data.platforms], game_data.availability_status.value,
+        game_data.show_credentials, game_data.allow_recharge, game_data.is_featured, next_order,
+        current_user['id'], now
+    )
     
-    return GameResponse(**game_doc)
-
+    await log_admin_action(current_user['id'], 'game_create', 'game', game_id, {'name': game_data.name})
+    
+    game = await fetch_one("SELECT * FROM games WHERE id = $1", game_id)
+    game = row_to_dict(game)
+    return GameResponse(**game)
 
 @router.put('/games/{game_id}', response_model=GameResponse)
-async def update_game(
-    game_id: str,
-    game_data: GameUpdate,
-    current_user: dict = Depends(get_current_admin)
-):
+async def update_game(game_id: str, game_data: GameUpdate, current_user: dict = Depends(get_current_admin)):
     """Update a game."""
-    db = await get_database()
-    
-    game = await db.games.find_one({'id': game_id}, {'_id': 0})
+    game = await fetch_one("SELECT * FROM games WHERE id = $1", game_id)
     if not game:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Game not found')
     
-    update_fields = {}
-    if game_data.name is not None:
-        update_fields['name'] = game_data.name
-    if game_data.description is not None:
-        update_fields['description'] = game_data.description
-    if game_data.tagline is not None:
-        update_fields['tagline'] = game_data.tagline
-    if game_data.thumbnail is not None:
-        update_fields['thumbnail'] = game_data.thumbnail
-    if game_data.icon_url is not None:
-        update_fields['icon_url'] = game_data.icon_url
-    if game_data.category is not None:
-        update_fields['category'] = game_data.category
-    if game_data.download_url is not None:
-        update_fields['download_url'] = game_data.download_url
+    updates = []
+    params = []
+    param_idx = 1
+    
+    field_mapping = {
+        'name': game_data.name, 'description': game_data.description, 'tagline': game_data.tagline,
+        'thumbnail': game_data.thumbnail, 'icon_url': game_data.icon_url, 'category': game_data.category,
+        'download_url': game_data.download_url, 'show_credentials': game_data.show_credentials,
+        'allow_recharge': game_data.allow_recharge, 'is_featured': game_data.is_featured,
+        'display_order': game_data.display_order, 'is_active': game_data.is_active
+    }
+    
+    for field, value in field_mapping.items():
+        if value is not None:
+            updates.append(f"{field} = ${param_idx}")
+            params.append(value)
+            param_idx += 1
+    
     if game_data.platforms is not None:
-        update_fields['platforms'] = [p.value for p in game_data.platforms]
+        updates.append(f"platforms = ${param_idx}")
+        params.append([p.value for p in game_data.platforms])
+        param_idx += 1
+    
     if game_data.availability_status is not None:
-        update_fields['availability_status'] = game_data.availability_status.value
-    if game_data.show_credentials is not None:
-        update_fields['show_credentials'] = game_data.show_credentials
-    if game_data.allow_recharge is not None:
-        update_fields['allow_recharge'] = game_data.allow_recharge
-    if game_data.is_featured is not None:
-        update_fields['is_featured'] = game_data.is_featured
-    if game_data.display_order is not None:
-        update_fields['display_order'] = game_data.display_order
-    if game_data.is_active is not None:
-        update_fields['is_active'] = game_data.is_active
+        updates.append(f"availability_status = ${param_idx}")
+        params.append(game_data.availability_status.value)
+        param_idx += 1
     
-    if update_fields:
-        await db.games.update_one({'id': game_id}, {'$set': update_fields})
-        await log_admin_action(db, current_user['id'], 'game_update', 'game', game_id, update_fields)
+    if updates:
+        params.append(game_id)
+        await execute(f"UPDATE games SET {', '.join(updates)} WHERE id = ${param_idx}", *params)
+        await log_admin_action(current_user['id'], 'game_update', 'game', game_id, game_data.dict(exclude_none=True))
     
-    updated_game = await db.games.find_one({'id': game_id}, {'_id': 0})
-    return GameResponse(**updated_game)
-
-
-@router.put('/games/reorder')
-async def reorder_games(
-    game_orders: List[dict],
-    current_user: dict = Depends(get_current_admin)
-):
-    """Update display order for multiple games. Expects: [{id: "...", order: 1}, ...]"""
-    db = await get_database()
-    
-    for item in game_orders:
-        await db.games.update_one(
-            {'id': item['id']},
-            {'$set': {'display_order': item['order']}}
-        )
-    
-    await log_admin_action(db, current_user['id'], 'games_reorder', 'games', 'bulk', {'count': len(game_orders)})
-    
-    return {'message': 'Games reordered successfully'}
-
+    updated = await fetch_one("SELECT * FROM games WHERE id = $1", game_id)
+    return GameResponse(**row_to_dict(updated))
 
 @router.delete('/games/{game_id}')
-async def delete_game(
-    game_id: str,
-    current_user: dict = Depends(get_current_admin)
-):
-    """Soft delete a game (set inactive)."""
-    db = await get_database()
-    
-    game = await db.games.find_one({'id': game_id}, {'_id': 0})
+async def delete_game(game_id: str, current_user: dict = Depends(get_current_admin)):
+    """Soft delete a game."""
+    game = await fetch_one("SELECT * FROM games WHERE id = $1", game_id)
     if not game:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Game not found')
     
-    await db.games.update_one({'id': game_id}, {'$set': {'is_active': False}})
-    await log_admin_action(db, current_user['id'], 'game_delete', 'game', game_id, {'name': game.get('name')})
-    
+    await execute("UPDATE games SET is_active = FALSE WHERE id = $1", game_id)
+    await log_admin_action(current_user['id'], 'game_delete', 'game', game_id, {'name': row_to_dict(game).get('name')})
     return {'message': 'Game deleted successfully'}
-
 
 # ==================== REFERRAL MANAGEMENT ====================
 
 @router.get('/referrals')
-async def get_referrals(
-    status_filter: Optional[str] = None,
-    current_user: dict = Depends(get_current_admin)
-):
+async def get_referrals(status_filter: Optional[str] = None, current_user: dict = Depends(get_current_admin)):
     """Get all referrals."""
-    db = await get_database()
-    
-    query = {}
     if status_filter:
-        query['status'] = status_filter
+        referrals = await fetch_all(
+            "SELECT * FROM client_referrals WHERE status = $1 ORDER BY created_at DESC LIMIT 500",
+            status_filter
+        )
+    else:
+        referrals = await fetch_all("SELECT * FROM client_referrals ORDER BY created_at DESC LIMIT 500")
     
-    referrals = await db.client_referrals.find(query, {'_id': 0}).sort('created_at', -1).to_list(500)
+    referrals = rows_to_list(referrals)
     
-    # Get client info
-    referrer_ids = list(set([r['referrer_client_id'] for r in referrals]))
-    referred_ids = list(set([r['referred_client_id'] for r in referrals]))
-    all_ids = list(set(referrer_ids + referred_ids))
-    
-    clients = await db.clients.find({'client_id': {'$in': all_ids}}, {'_id': 0}).to_list(500)
-    clients_map = {c['client_id']: c for c in clients}
+    all_ids = list(set([r['referrer_client_id'] for r in referrals] + [r['referred_client_id'] for r in referrals]))
+    if all_ids:
+        placeholders = ', '.join([f'${i+1}' for i in range(len(all_ids))])
+        clients = await fetch_all(f"SELECT client_id, display_name FROM clients WHERE client_id IN ({placeholders})", *all_ids)
+        clients_map = {c['client_id']: c for c in rows_to_list(clients)}
+    else:
+        clients_map = {}
     
     result = []
     for ref in referrals:
         referrer = clients_map.get(ref['referrer_client_id'], {})
         referred = clients_map.get(ref['referred_client_id'], {})
-        result.append({
-            **ref,
-            'referrer_name': referrer.get('display_name', 'Unknown'),
-            'referred_name': referred.get('display_name', 'Unknown')
-        })
+        ref['referrer_name'] = referrer.get('display_name', 'Unknown')
+        ref['referred_name'] = referred.get('display_name', 'Unknown')
+        if ref.get('created_at'):
+            ref['created_at'] = ref['created_at'].isoformat()
+        result.append(ref)
     
     return {'referrals': result}
 
-
 @router.put('/referrals/{referral_id}/status')
-async def update_referral_status(
-    referral_id: str,
-    new_status: str,
-    current_user: dict = Depends(get_current_admin)
-):
-    """Update referral status (valid, fraud, suspected)."""
-    db = await get_database()
-    
+async def update_referral_status(referral_id: str, new_status: str, current_user: dict = Depends(get_current_admin)):
+    """Update referral status."""
     if new_status not in ['pending', 'valid', 'fraud', 'suspected']:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid status')
     
-    referral = await db.client_referrals.find_one({'id': referral_id}, {'_id': 0})
+    referral = await fetch_one("SELECT * FROM client_referrals WHERE id = $1", referral_id)
     if not referral:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Referral not found')
     
+    referral = row_to_dict(referral)
     old_status = referral.get('status')
     
-    await db.client_referrals.update_one(
-        {'id': referral_id},
-        {'$set': {'status': new_status}}
-    )
+    await execute("UPDATE client_referrals SET status = $1 WHERE id = $2", new_status, referral_id)
     
-    # Update valid referral count if status changed to/from valid
     if old_status == 'valid' and new_status != 'valid':
-        await db.clients.update_one(
-            {'client_id': referral['referrer_client_id']},
-            {'$inc': {'valid_referral_count': -1}}
+        await execute(
+            "UPDATE clients SET valid_referral_count = valid_referral_count - 1 WHERE client_id = $1",
+            referral['referrer_client_id']
         )
     elif old_status != 'valid' and new_status == 'valid':
-        await db.clients.update_one(
-            {'client_id': referral['referrer_client_id']},
-            {'$inc': {'valid_referral_count': 1}}
+        await execute(
+            "UPDATE clients SET valid_referral_count = valid_referral_count + 1 WHERE client_id = $1",
+            referral['referrer_client_id']
         )
     
-    await log_admin_action(db, current_user['id'], 'referral_status_update', 'referral', referral_id, {
-        'old_status': old_status,
-        'new_status': new_status
+    await log_admin_action(current_user['id'], 'referral_status_update', 'referral', referral_id, {
+        'old_status': old_status, 'new_status': new_status
     })
     
     return {'message': 'Referral status updated'}
 
-
 # ==================== AUDIT LOGS ====================
 
 @router.get('/audit-logs')
-async def get_audit_logs(
-    limit: int = 100,
-    current_user: dict = Depends(get_current_admin)
-):
+async def get_audit_logs(limit: int = 100, current_user: dict = Depends(get_current_admin)):
     """Get admin audit logs."""
-    db = await get_database()
-    logs = await db.audit_logs.find({}, {'_id': 0}).sort('timestamp', -1).to_list(limit)
-    return {'logs': logs}
+    logs = await fetch_all("SELECT * FROM audit_logs ORDER BY timestamp DESC LIMIT $1", limit)
+    
+    result = []
+    for log in rows_to_list(logs):
+        if log.get('timestamp'):
+            log['timestamp'] = log['timestamp'].isoformat()
+        result.append(log)
+    
+    return {'logs': result}
